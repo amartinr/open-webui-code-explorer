@@ -30,7 +30,7 @@ This is distinct from the documentation side, which is handled separately
 - Let the meta model **clone, fetch, list, search, explore, read, and compare**
   code repositories through tools, never through its own shell or network.
 - Keep every tool **read-only** with respect to source code, except for the
-  `manage_repos` tool (its `clone`/`fetch` actions) which may only write inside a
+  `clone_repo` and `fetch_repo` tools, which may only write inside a
   dedicated, allow-listed repository directory.
 - Provide a **secure-by-default** surface: path sanitization, output size
   limits, allow-listed subprocesses, no arbitrary command execution.
@@ -83,16 +83,17 @@ These rules are non-negotiable and MUST be enforced by every tool.
    strings. Each tool invokes a fixed set of binaries (`git`, `rg`, `fd`) using
    argument arrays (no `shell=True`).
 2. **Read-only for code.** No tool may create, modify, or delete files inside
-   repositories. Exception: the `manage_repos` tool (its `clone`/`fetch` actions) may
+   repositories. Exception: the `clone_repo` and `fetch_repo` tools may
    write *only* into `<repos_path>`, and only via `git`.
 3. **Path sanitization.** Every `repo` and `path` parameter MUST be validated
    against path traversal (`..`, absolute paths, symlink escapes) and resolved
    strictly inside the repository root. Reject anything that escapes.
-4. **Bounded output.** Every tool MUST enforce a maximum number of results and
-   a maximum byte/line output, truncating with an explicit "truncated" marker so
+4. **Bounded output.** Every tool MUST enforce maximum result, line, and byte
+   limits (admin Valves, §5.5), truncating with an explicit "truncated" marker so
    the model knows results are incomplete.
 5. **No network from the model.** The model cannot reach the network. Only the
-   `manage_repos` tool may talk to remotes, and only through `git` (clone/fetch).
+   `clone_repo` and `fetch_repo` tools may talk to remotes, and only through
+   `git` (clone/fetch).
 6. **No execution of code.** Nothing is run, imported, or evaluated. Tools only
    read bytes and run Git/ripgrep/fd.
 
@@ -128,13 +129,86 @@ Repositories are stored under a configurable base path using the
 - The Valve is a *logical* override; actual write permission is still granted
   by the mounted volume. Document this clearly in the Valve description.
 
-### 5.4 Configuration of the `manage_repos` tool
+### 5.4 Deployment: three tool scripts, three `Valves` classes
 
-All three `manage_repos` actions (`clone`, `fetch`, `list`) read the same storage
-location. The `manage_repos` tool MUST expose a single `repos_path` Valve (empty by
-default) and resolve it against the env var and default as described in §5.2.
-Implement the resolution logic once (shared helper) and reuse it across the
-actions.
+The project is deployed to Open WebUI as **three tool scripts**, each exposing
+multiple tools via `as_tools()`. The grouping is by object, not by phase:
+
+| Script | Tools exposed | Phase(s) |
+|---|---|---|
+| **Repos** | `clone_repo`, `fetch_repo`, `list_repos` | Phase 1 |
+| **Files & Search** | `list_files`, `read_file`, `search_text`, `search_symbol` | Phase 2 + `search_symbol` in Phase 3 |
+| **Commits** | `list_commits`, `show_commit`, `compare_commits` | Phase 3 |
+
+Rationale for this split:
+- **Per-script tool access in Open WebUI**: an operator can attach only the
+  "Files & Search" script to a model, withholding repo management and commit
+  analysis.
+- **Per-script Valves**: caps can be tuned per group (e.g. wider `max_results`
+  for search than for file listing).
+
+Note: the "Files & Search" script is created in Phase 2 with `list_files`,
+`read_file`, and `search_text`. `search_symbol` is added to the same script in
+Phase 3 (not stubbed earlier).
+
+### 5.5 Shared Valves (identical contract across the three scripts)
+
+Each script defines its **own** `Valves` class (Open WebUI Valves are
+per-script). To avoid drift, the same fields with the same names and defaults
+MUST be declared consistently in all three scripts.
+
+Admin-facing Valves (not exposed to the agent):
+
+| Valve | Type | Default | Purpose |
+|---|---|---|---|
+| `repos_path` | str | `""` (→ env → `/usr/local/src`) | Base directory for clones (§5.2). |
+| `max_results` | int | `50` | Cap on item counts (files, matches, commits). |
+| `max_lines` | int | `200` | Cap on output lines (file reads, diffs). |
+| `max_bytes` | int | `20480` | Hard byte cap (20 KB); whichever of `max_lines`/`max_bytes` is hit first truncates. |
+
+All three scripts need `repos_path` (even read/search/commit tools must locate
+the repositories). The **`OWUI_REPOS_PATH` env var is the recommended global
+single source of truth**: set it once at the container level and leave the
+`repos_path` Valve empty, so the per-script Valves rarely need to diverge.
+
+These caps are **infrastructure/safety policy** (protect against huge outputs,
+timeouts, and context exhaustion), so they belong to the operator, not the
+agent. The agent never passes them as parameters.
+
+When a cap truncates output, the tool MUST append a marker like
+`... (truncated: showing N of M)` so the agent knows results are incomplete and
+can refine its query instead of assuming it saw everything.
+
+### 5.6 Shared helper contract
+
+All three scripts import a common helper module (`common.py`) that centralizes
+the security-critical logic. The following MUST be the single implementation for
+every tool (no per-tool reimplementation).
+
+```python
+def resolve_repos_path(valve_path: str) -> str
+# Priority: Valve repos_path → env OWUI_REPOS_PATH → default "/usr/local/src".
+
+def repo_component_ok(component: str) -> bool
+# True iff component matches ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ and not in {".", ".."}.
+
+def resolve_repo_root(repo: str, repos_path: str) -> Path
+# Split repo on the FIRST "/" (exactly two components). Reject if either component
+# fails repo_component_ok. Return repos_path / owner / name (existence NOT checked).
+
+def resolve_path(repo: str, path: str | None, repos_path: str) -> Path
+# Resolve `path` relative to the repo root. Raise ToolError if: path is absolute;
+# any segment is ".."; or the resolved path, after .resolve(), escapes the repo
+# root (symlink escape). None → repo root.
+
+def run_allowed(argv: list[str], timeout: int) -> subprocess.CompletedProcess
+# subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout).
+# argv[0] MUST be one of the allow-listed binaries {"git", "rg", "fd"}.
+```
+
+`ToolError` is a shared exception mapped to a user-facing message (never a raw
+traceback). All tools go through these helpers for repo/path resolution and
+subprocess execution.
 
 ---
 
@@ -142,28 +216,29 @@ actions.
 
 All tools share these conventions. Implement them consistently.
 
-- **Naming:** Open WebUI convention `verb_noun` (action + object). Each tool's
-  name states what it does. A tool MAY use a dispatch parameter when several
-  operations act on the same object and share configuration/safeguards:
-  - `manage_repos` → `action: clone | fetch | list` (repo collection, shared storage/Valve).
-  - `inspect_files` → `action: list | read` (files in a repo, shared path sanitization).
-  - `review_commits` → `action: list | show | compare` (commit history, shared `git` handling).
-  - `search_code` → `mode: text | symbol` (code search, shared `rg` handling).
-- **Dispatch parameter vocabulary** (one meaning per name, project-wide):
-  - `action` → values are **verbs** (operations): `clone|fetch|list`, `list|read`, `list|show|compare`.
-  - `mode` → values are **categories** (nouns): `text|symbol`.
-  - `type` → reserved for the file-type filter of `inspect_files` (`file|dir|all`).
+- **Naming:** Open WebUI convention `verb_noun` (action + object). Tools are
+  **granular**: one tool = one operation, and the name states what it does.
+  There are no dispatch parameters (`action`/`mode`) anywhere in the project;
+  every operation is a distinct tool.
+- **Selector vocabulary** (one meaning per name, project-wide):
+  - `type` → file-type filter in `list_files` (`file | dir | all`).
+  - `filter` → see below.
 - **`filter` parameter:** named `filter` for model readability, but its value is a
-  **glob pattern** (e.g. `*.py`, `!*.md`). Internally it maps to `fd`/`rg`
-  `--glob`/pattern arguments. Used by `inspect_files` (list) and `search_code`.
+  **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
+  space-separated patterns; a leading `!` marks an exclusion. Mapping:
+  - `rg` (search): include → `--glob P`, exclude → `--glob '!P'`.
+  - `fd` (list): include → `--glob P`, exclude → `--exclude P`.
+  Used by `list_files`, `search_text`, and `search_symbol`.
 - **Parameter style:** snake_case. Required vs. optional is stated per schema.
-- **`repo` scoping:** every read/search/compare tool REQUIRES a `repo`
+- **`repo` scoping:** every tool (except `list_repos`) REQUIRES a `repo`
   (`<owner>/<repo>`) parameter. Tools never operate over the entire
   `<repos_path>` blindly.
+- **Output caps are Valves, not parameters.** `max_results`, `max_lines`, and
+  `max_bytes` are admin Valves (§5.5) and MUST NOT appear in tool schemas.
+  Agent-facing parameters are limited to *semantic* inputs (paths, queries,
+  filters, ranges, flags) that express intent.
 - **Output format:** plain text/markdown-friendly. Errors are returned as
   structured messages, not raised exceptions that crash the tool.
-- **Truncation marker:** when output exceeds limits, append a line like
-  `... (truncated: showing N of M results)`.
 - **Determinism:** prefer stable ordering (e.g., `rg --sort path`, `fd`
   default order, `git log` default order).
 
@@ -174,143 +249,184 @@ All tools share these conventions. Implement them consistently.
 Implementation is split into phases with clear dependencies. Each phase MUST be
 validated (see §8) before moving to the next.
 
-### Phase 1 — Foundation: `manage_repos` (clone / fetch / list)
+### Phase 1 — Foundation: `clone_repo`, `fetch_repo`, `list_repos`
 
 > Goal: establish the storage layer and enable bringing code into the system.
-> This is the only tool that writes to disk (inside the allow-listed repo dir).
+> These are the only tools that write to disk (inside the allow-listed repo dir).
 
-#### Schema
+#### `clone_repo`
 
 ```
-manage_repos(
-  action: "clone" | "fetch" | "list"   # required
-  repo:   str                          # required for clone/fetch: "<owner>/<name>"
-  url:    str                          # optional for clone: full clone URL (overrides repo)
-  ref:    str                          # optional for clone: branch | tag | "release"
+clone_repo(
+  repo:  str      # required: "<owner>/<name>"
+  url:   str      # optional: full clone URL (overrides repo)
+  ref:   str      # optional: branch | tag | "release"
 )
 ```
 
-#### Behavior per action
+- Resolve target `<repos_path>/<owner>/<name>`.
+- If it already exists, return an error/notice telling the model to use
+  `fetch_repo` or `list_repos` (no destructive overwrite).
+- Run `git clone` (full clone; no shallow option).
+- After clone, if `ref` is given, checkout that ref.
+- `ref="release"` is a special value resolving to the most recent **release tag**:
+  prefer the highest tag matching a semver pattern (`v?X.Y.Z`) ordered by version;
+  fall back to the latest tag by commit date (`git tag --sort=-creatordate`, first
+  line); error if the repo has no tags. This requires a full clone (tags included).
+- Return: target path, default branch, resolved `ref`, and short status.
 
-- **`clone`**
-  - Resolve target `<repos_path>/<owner>/<name>`.
-  - If it already exists, return an error/notice telling the model to use
-    `fetch` or `list` (no destructive overwrite).
-  - Run `git clone` (full clone; no shallow option).
-  - After clone, if `ref` is given, checkout that ref.
-  - Return: target path, default branch, resolved `ref`, and short status.
-- **`fetch`**
-  - Requires the repo to already exist.
-  - Run `git fetch --all --tags --prune`.
-  - Return list of updated branches/tags, or a notice if up to date.
-- **`list`**
-  - Enumerate existing clones under `<repos_path>` (owner/repo and, optionally,
-    current checked-out branch). No `repo` needed.
-  - Helpful so the model does not clone duplicates.
+#### `fetch_repo`
+
+```
+fetch_repo(
+  repo:  str      # required: "<owner>/<name>"
+)
+```
+
+- Requires the repo to already exist.
+- Run `git fetch --all --tags --prune`.
+- Return list of updated branches/tags, or a notice if up to date.
+
+#### `list_repos`
+
+```
+list_repos()
+```
+
+- Enumerate existing clones under `<repos_path>` (owner/repo and, optionally,
+  current checked-out branch). No parameters.
+- Helpful so the model does not clone duplicates.
 
 #### Phase 1 safety notes
 
-- Only `clone`/`fetch` write; both restrict writes to `<repos_path>`.
-- `repo` is validated against `^[\w.-]+/[\w.-]+$` (or resolved from `url`).
+- Only `clone_repo` / `fetch_repo` write; both restrict writes to `<repos_path>`.
+- `repo` is validated via the shared helper `resolve_repo_root` (§5.6). The
+  format is `<owner>/<name>`, each component matching
+  `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` and neither component equal to `.` or `..`.
+  **Do NOT use `^[\w.-]+/[\w.-]+$`: it accepts `..`, enabling path traversal.**
 - No `--recurse-submodules` unless explicitly designed and safe.
 
 ---
 
-### Phase 2 — Reading & searching: `inspect_files`, `search_code`
+### Phase 2 — Reading & searching: `list_files`, `read_file`, `search_text`
 
 > Goal: give the model the ability to navigate structure, read files, and find
 > code/text. These map to `fd` (find), direct read (`cat`/`sed -n`), and `rg`
 > (ripgrep).
 
-#### `inspect_files`
+#### `list_files`
 
 ```
-inspect_files(
-  action:    "list" | "read"          # required
-  repo:      str                      # required: "<owner>/<name>"
-  path:      str                      # optional for list (default repo root); required for read
-  max_depth: int                      # optional, list only
-  filter:    str                      # optional, list only (glob pattern, e.g. "*.py", "!*.md")
-  type:      "file" | "dir" | "all"   # optional, list only
-  start:     int                      # optional, read only (1-based line)
-  end:       int                      # optional, read only (1-based line)
-  max_lines: int                      # optional, read only (if no range)
+list_files(
+  repo:      str                  # required: "<owner>/<name>"
+  path:      str                  # optional (default repo root)
+  max_depth: int                  # optional
+  filter:    str                  # optional (glob pattern, e.g. "*.py", "!*.md")
+  type:      "file" | "dir" | "all"   # optional
 )
 ```
 
-- **`list`** → `fd` with `--max-depth`, `--type`, glob patterns (from `filter`). Returns relative
-  paths, sorted, capped by `max_results`.
-- **`read`** → direct file read (or `sed -n 'start,endp'`). Binary files MUST be
-  detected and rejected with a clear message. Enforce `max_lines`/byte cap.
+- Uses `fd` with `--max-depth`, `--type`, glob patterns (from `filter`). Returns
+  relative paths, sorted, capped by the `max_results` Valve.
 
-#### `search_code`
+#### `read_file`
 
 ```
-search_code(
-  mode:          "text" | "symbol"    # required
-  repo:          str                  # required: "<owner>/<name>"
-  query:         str                  # required
-  path:          str                  # optional: subdirectory/file to narrow scope
-  filter:        str                  # optional: file filter, glob pattern (e.g. "*.py")
-  context:       int                  # optional: lines of context (rg -C), text only
-  case_sensitive:bool                 # optional, default false, text only
-  max_results:   int                  # optional, default 50
+read_file(
+  repo:  str      # required: "<owner>/<name>"
+  path:  str      # required
+  start: int      # optional (1-based line)
+  end:   int      # optional (1-based line)
 )
 ```
 
-- **`text`** → `rg -n --sort path [--context N] [--glob <filter>] [--case-sensitive] <query> <path>`.
-  (Delivered in Phase 2.)
-- **`symbol`** → `rg` with language-aware definition patterns (functions, classes,
-  methods, constants). (Delivered in Phase 3 — see §7 Phase 3.)
+- Direct file read (or `sed -n 'start,endp'`). Binary files MUST be detected and
+  rejected with a clear message. Output capped by the `max_lines`/`max_bytes`
+  Valves.
+
+#### `search_text`
+
+```
+search_text(
+  repo:          str      # required: "<owner>/<name>"
+  query:         str      # required
+  path:          str      # optional: subdirectory/file to narrow scope
+  filter:        str      # optional: file filter, glob pattern (e.g. "*.py")
+  context:       int      # optional: lines of context (rg -C)
+  case_sensitive:bool     # optional, default false
+)
+```
+
+- Runs `rg -n --sort path [--context N] [--glob <filter>] [--case-sensitive] <query> <path>`.
+- Capped by the `max_results` Valve.
 - Never pass raw query via shell; use argument array. Escaping is handled by
   subprocess args.
 
 ---
 
-### Phase 3 — Comparative & symbolic: `review_commits`, `search_code` (symbol)
+### Phase 3 — Comparative & symbolic: `search_symbol`, `list_commits`, `show_commit`, `compare_commits`
 
 > Goal: reasoning about changes and navigating code by symbol, not just raw text.
 
-#### `review_commits`
+#### `search_symbol`
 
 ```
-review_commits(
-  action:  "list" | "show" | "compare"   # required
-  repo:    str                           # required: "<owner>/<name>"
-
-  # list:
-  ref_a:   str                           # optional (branch|tag|commit)
-  ref_b:   str                           # optional (branch|tag|commit)
-  path:    str                           # optional: narrow scope
-  max_results: int                       # optional
-
-  # show:
-  commit:  str                           # required for show (commit hash or ref)
-  path:    str                           # optional: narrow scope
-  max_lines: int                         # optional
-
-  # compare:
-  ref_a:   str                           # required for compare
-  ref_b:   str                           # required for compare
-  path:    str                           # optional: narrow scope
-  stat:    bool                          # optional: return --stat summary instead of full diff
-  max_lines: int                         # optional
+search_symbol(
+  repo:   str      # required: "<owner>/<name>"
+  query:  str      # required (symbol name or partial)
+  path:   str      # optional: narrow scope
+  filter: str      # optional: file filter, glob pattern
 )
 ```
 
-- **`list`** → `git log --oneline [ref_a..ref_b] -- <path>`, capped. Defaults to
-  current HEAD history when no refs are given.
-- **`show`** → `git show <commit> -- <path>`, capped.
-- **`compare`** → `git diff ref_a...ref_b -- <path>` (or `..` as a documented
-  variant). `stat=True` → `git diff --stat ref_a...ref_b -- <path>` for an overview.
-
-#### `search_code` — `symbol` mode
-
-- Delivered in this phase (schema defined in Phase 2).
 - Uses `rg` with language-aware patterns for definitions (functions, classes,
   methods, constants). Implementation detail: derive patterns per file extension
   or use `rg` with a curated set of regexes; do NOT run `ctags` unless
   explicitly added to the allow-list.
+- Capped by the `max_results` Valve.
+
+#### `list_commits`
+
+```
+list_commits(
+  repo:  str      # required: "<owner>/<name>"
+  ref_a: str      # optional (branch|tag|commit)
+  ref_b: str      # optional (branch|tag|commit)
+  path:  str      # optional: narrow scope
+)
+```
+
+- `git log --oneline [ref_a..ref_b] -- <path>`, capped by `max_results`. Defaults
+  to current HEAD history when no refs are given.
+
+#### `show_commit`
+
+```
+show_commit(
+  repo:   str      # required: "<owner>/<name>"
+  commit: str      # required (commit hash or ref)
+  path:   str      # optional: narrow scope
+)
+```
+
+- `git show <commit> -- <path>`, capped by `max_lines`/`max_bytes`.
+
+#### `compare_commits`
+
+```
+compare_commits(
+  repo:  str      # required: "<owner>/<name>"
+  ref_a: str      # required (branch|tag|commit)
+  ref_b: str      # required (branch|tag|commit)
+  path:  str      # optional: narrow scope
+  stat:  bool     # optional: return --stat summary instead of full diff
+)
+```
+
+- `git diff ref_a...ref_b -- <path>` (three-dot / merge-base; the decided default,
+  see §10). A two-dot (`..`) variant is a possible future addition.
+- `stat=True` → `git diff --stat ref_a...ref_b -- <path>` for an overview.
+- Capped by `max_lines`/`max_bytes`.
 
 ---
 
@@ -318,11 +434,11 @@ review_commits(
 
 - Write **high-quality tool descriptions** (the text the model reads to decide
   when and how to use each tool). Each description MUST state: purpose, when to
-  use it, parameter meanings, and safety limits.
+  use it, and parameter meanings.
 - (Optional) Provide a **system prompt / skill** with usage rules, e.g.:
   - Always scope with `repo` + narrow `path`/`filter` before broad searches.
-  - Prefer `inspect_files(action="list")` to understand structure before reading.
-  - Use `review_commits(action=...)` when asked about changes/releases.
+  - Prefer `list_files` to understand structure before reading.
+  - Use `list_commits` / `show_commit` / `compare_commits` when asked about changes/releases.
   - Treat truncated results as incomplete; refine the query.
 
 ### Phase 5 — (Optional) Documentation via Knowledge Base
@@ -341,28 +457,29 @@ Each phase is "done" only when all its criteria pass.
 
 ### Phase 1
 
-- [ ] `manage_repos(action="clone")` clones a public repo into `<repos_path>/<owner>/<name>`.
-- [ ] `manage_repos(action="clone")` on an existing repo fails gracefully (no overwrite).
-- [ ] `manage_repos(action="fetch")` updates branches/tags and reports changes.
-- [ ] `manage_repos(action="list")` shows all clones with their owner/repo.
+- [ ] `clone_repo` clones a public repo into `<repos_path>/<owner>/<name>`.
+- [ ] `clone_repo` on an existing repo fails gracefully (no overwrite).
+- [ ] `fetch_repo` updates branches/tags and reports changes.
+- [ ] `list_repos` shows all clones with their owner/repo.
 - [ ] Path traversal and malformed `repo` values are rejected.
 - [ ] Env var `OWUI_REPOS_PATH` and Valve `repos_path` both affect location,
       with Valve taking precedence.
 
 ### Phase 2
 
-- [ ] `inspect_files(action="list")` returns sorted relative paths, honoring depth/filter/type.
-- [ ] `inspect_files(action="read")` reads a range; binary files are rejected cleanly.
-- [ ] `search_code(mode="text")` finds matches with line numbers and context.
-- [ ] All outputs respect caps and include truncation markers.
+- [ ] `list_files` returns sorted relative paths, honoring max_depth/filter/type.
+- [ ] `read_file` reads a range; binary files are rejected cleanly.
+- [ ] `search_text` finds matches with line numbers and context.
+- [ ] All outputs respect the `max_results`/`max_lines`/`max_bytes` Valves and
+      include truncation markers.
 - [ ] No path escapes the repo root.
 
 ### Phase 3
 
-- [ ] `review_commits(action="list")` lists history, capped.
-- [ ] `review_commits(action="show")` displays a single commit.
-- [ ] `review_commits(action="compare")` shows changes between two refs, with `--stat` support.
-- [ ] `search_code(mode="symbol")` locates definitions with reasonable precision.
+- [ ] `search_symbol` locates definitions with reasonable precision.
+- [ ] `list_commits` lists history, capped.
+- [ ] `show_commit` displays a single commit.
+- [ ] `compare_commits` shows changes between two refs, with `--stat` support.
 
 ### Phase 4
 
@@ -374,27 +491,100 @@ Each phase is "done" only when all its criteria pass.
 
 ## 9. Implementation Notes (Open WebUI specifics)
 
-- Tools are implemented as Python classes following the Open WebUI Tool API,
-  with a `Valves` model (Pydantic) for runtime configuration.
-- The `manage_repos` tool defines a `Valves` field `repos_path: str` (optional,
-  default empty → fall back to env var → `/usr/local/src`). Use a **shared
-  helper** for this resolution (§5.4).
-- Use `subprocess.run(..., shell=False, capture_output=True, timeout=...)`
-  with explicit timeouts. Handle timeouts gracefully (return a message).
-- Return results as strings; avoid exceptions escaping the tool.
-- Keep each tool a single cohesive unit (one Python file per tool, or a small
-  package). Structure code for unit-testing the path sanitizer and output caps
-  independently of Open WebUI.
+### 9.1 References & environment
+
+- **Tool API reference:** `docs.openwebui.com` → Tools and Valves sections
+  (current URL: `https://docs.openwebui.com/features/tools/`). Follow it for the
+  `Tools` class, `Valves` (Pydantic), and `as_tools()`.
+- **Working examples:** `open-webui/open-webui` repo → `backend/open_webui/tools/`
+  (built-in tools), and the `open-webui/tools` community repo.
+- **Required binaries** (must be in `PATH`): `git`, `rg` (ripgrep), `fd`.
+  Each script SHOULD check for them at startup and log a clear error if missing.
+  All subprocess calls use the resolved absolute path of the binary.
+
+### 9.2 File structure (proposed)
+
+```
+open-webui-code-explorer/
+  common.py              # shared helpers (§5.6), ToolError, allow-list, caps
+  tools_repos.py         # script "Repos": clone_repo, fetch_repo, list_repos
+  tools_files_search.py  # script "Files & Search": list_files, read_file, search_text, search_symbol
+  tools_commits.py       # script "Commits": list_commits, show_commit, compare_commits
+  tests/
+    test_common.py       # path sanitization, repo validation, caps
+    test_tools_*.py
+  README.md              # deploy/configure instructions
+```
+
+The three `tools_*.py` scripts import from `common.py`. Each is uploaded to Open
+WebUI as its own Tool (paste via admin UI "Add Tool", or drop into the tools
+directory and restart).
+
+### 9.3 Output format examples
+
+Every tool returns a single string, parseable and markdown-friendly.
+
+- `list_files`: one relative path per line, sorted. Marker on its own line when
+  truncated.
+  ```
+  src/open_webui/app.py
+  src/open_webui/config.py
+  ... (truncated: showing 50 of 128)
+  ```
+- `read_file`: raw file content (or the requested range), no added headers. If a
+  range is truncated, append the marker.
+- `search_text` / `search_symbol`: one match per line, `path:line: matched text`,
+  plus context lines indented, then the marker if truncated.
+  ```
+  src/open_webui/app.py:42: def create_app():
+  ```
+- `list_repos`: one line per clone, `owner/name  [branch]`.
+- `list_commits`: one commit per line (`hash subject`), capped.
+- `show_commit` / `compare_commits`: raw `git show` / `git diff` output (or the
+  `--stat` summary when `stat=True`), capped.
+
+Errors: return a plain string beginning with `Error:` (or `Not found:` / `Timed
+out:`), never a raised exception.
+
+### 9.4 Timeout policy
+
+| Operation | Default timeout |
+|---|---|
+| `clone_repo` | 600 s |
+| `fetch_repo` | 120 s |
+| `list_files`, `search_text`, `search_symbol` | 30 s |
+| `read_file` | 10 s |
+| `list_commits`, `show_commit`, `compare_commits` | 30 s |
+
+On timeout, return `Error: timed out after Ns`. These are implementation defaults;
+they may be exposed later as admin Valves if needed.
+
+### 9.5 Deployment (per script)
+
+1. Implement and unit-test `common.py` and a script locally.
+2. In Open WebUI admin → Tools, add a new tool; paste the script (or place the
+   file in the Open WebUI tools directory and restart).
+3. In the tool's Valves, confirm the defaults (§5.5); set `repos_path` only if
+   you are NOT using `OWUI_REPOS_PATH`.
+4. In a model config, attach the desired tool script(s).
+5. Test against a small public repo before wiring the meta model.
 
 ---
 
 ## 10. Open Questions / Decisions Pending
 
+Decisions made (recorded for the record):
+- `compare_commits` uses the **three-dot** (`...`, merge-base) diff by default —
+  for "what changed between X and Y" this shows changes on `ref_b` since its
+  divergence from `ref_a`. A two-dot (`..`) option may be added later if needed.
+- `clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
+
+Still open:
 - [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
-- [ ] Whether `review_commits(action="compare")` uses `...` (merge-base) or `..` (direct) diff by default.
-- [ ] Default caps: `max_results` and byte limits (propose 50 results / 20 KB per
-      tool call, adjustable).
-- [ ] Whether `manage_repos` `fetch` should also fetch specific releases via `ref="release"`.
+- [ ] Default cap values: propose `max_results=50`, `max_lines=200`,
+      `max_bytes=20480`; adjust after real-world testing.
+- [ ] Whether `fetch_repo` should also resolve `ref="release"` (currently only
+      `clone_repo` does).
 
 ---
 
