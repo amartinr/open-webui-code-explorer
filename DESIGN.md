@@ -153,6 +153,9 @@ All tools share these conventions. Implement them consistently.
   - `action` → values are **verbs** (operations): `clone|fetch|list`, `list|read`, `list|show|compare`.
   - `mode` → values are **categories** (nouns): `text|symbol`.
   - `type` → reserved for the file-type filter of `inspect_files` (`file|dir|all`).
+- **`filter` parameter:** named `filter` for model readability, but its value is a
+  **glob pattern** (e.g. `*.py`, `!*.md`). Internally it maps to `fd`/`rg`
+  `--glob`/pattern arguments. Used by `inspect_files` (list) and `search_code`.
 - **Parameter style:** snake_case. Required vs. optional is stated per schema.
 - **`repo` scoping:** every read/search/compare tool REQUIRES a `repo`
   (`<owner>/<repo>`) parameter. Tools never operate over the entire
@@ -184,7 +187,6 @@ manage_repos(
   repo:   str                          # required for clone/fetch: "<owner>/<name>"
   url:    str                          # optional for clone: full clone URL (overrides repo)
   ref:    str                          # optional for clone: branch | tag | "release"
-  depth:  int                          # optional for clone: shallow clone depth
 )
 ```
 
@@ -194,7 +196,7 @@ manage_repos(
   - Resolve target `<repos_path>/<owner>/<name>`.
   - If it already exists, return an error/notice telling the model to use
     `fetch` or `list` (no destructive overwrite).
-  - Run `git clone` with `--depth <depth>` if provided; otherwise a full clone.
+  - Run `git clone` (full clone; no shallow option).
   - After clone, if `ref` is given, checkout that ref.
   - Return: target path, default branch, resolved `ref`, and short status.
 - **`fetch`**
@@ -228,7 +230,7 @@ inspect_files(
   repo:      str                      # required: "<owner>/<name>"
   path:      str                      # optional for list (default repo root); required for read
   max_depth: int                      # optional, list only
-  glob:      str                      # optional, list only (e.g. "*.py", "!*.md")
+  filter:    str                      # optional, list only (glob pattern, e.g. "*.py", "!*.md")
   type:      "file" | "dir" | "all"   # optional, list only
   start:     int                      # optional, read only (1-based line)
   end:       int                      # optional, read only (1-based line)
@@ -236,7 +238,7 @@ inspect_files(
 )
 ```
 
-- **`list`** → `fd` with `--max-depth`, `--type`, glob patterns. Returns relative
+- **`list`** → `fd` with `--max-depth`, `--type`, glob patterns (from `filter`). Returns relative
   paths, sorted, capped by `max_results`.
 - **`read`** → direct file read (or `sed -n 'start,endp'`). Binary files MUST be
   detected and rejected with a clear message. Enforce `max_lines`/byte cap.
@@ -249,14 +251,14 @@ search_code(
   repo:          str                  # required: "<owner>/<name>"
   query:         str                  # required
   path:          str                  # optional: subdirectory/file to narrow scope
-  glob:          str                  # optional: file filter (e.g. "*.py")
+  filter:        str                  # optional: file filter, glob pattern (e.g. "*.py")
   context:       int                  # optional: lines of context (rg -C), text only
   case_sensitive:bool                 # optional, default false, text only
   max_results:   int                  # optional, default 50
 )
 ```
 
-- **`text`** → `rg -n --sort path [--context N] [--glob G] [--case-sensitive] <query> <path>`.
+- **`text`** → `rg -n --sort path [--context N] [--glob <filter>] [--case-sensitive] <query> <path>`.
   (Delivered in Phase 2.)
 - **`symbol`** → `rg` with language-aware definition patterns (functions, classes,
   methods, constants). (Delivered in Phase 3 — see §7 Phase 3.)
@@ -318,7 +320,7 @@ review_commits(
   when and how to use each tool). Each description MUST state: purpose, when to
   use it, parameter meanings, and safety limits.
 - (Optional) Provide a **system prompt / skill** with usage rules, e.g.:
-  - Always scope with `repo` + narrow `path`/`glob` before broad searches.
+  - Always scope with `repo` + narrow `path`/`filter` before broad searches.
   - Prefer `inspect_files(action="list")` to understand structure before reading.
   - Use `review_commits(action=...)` when asked about changes/releases.
   - Treat truncated results as incomplete; refine the query.
@@ -349,7 +351,7 @@ Each phase is "done" only when all its criteria pass.
 
 ### Phase 2
 
-- [ ] `inspect_files(action="list")` returns sorted relative paths, honoring depth/glob/type.
+- [ ] `inspect_files(action="list")` returns sorted relative paths, honoring depth/filter/type.
 - [ ] `inspect_files(action="read")` reads a range; binary files are rejected cleanly.
 - [ ] `search_code(mode="text")` finds matches with line numbers and context.
 - [ ] All outputs respect caps and include truncation markers.
