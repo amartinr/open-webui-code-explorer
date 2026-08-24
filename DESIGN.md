@@ -872,10 +872,14 @@ Decisions made (recorded for the record):
   being JSON-encoded.
 - `read_file` reads with native Python I/O (open/read in `asyncio.to_thread`)
   instead of `cat`/`sed` subprocesses: it does not widen the subprocess
-  allow-list, and binary detection is native (null byte in an 8 KB sample or a
-  failed strict UTF-8 decode rejects the file). Ranges larger than 5000 lines
-  are streamed (only the shown lines are read); files larger than 50 MB are
-  rejected.
+  allow-list. Binary detection scans the WHOLE file with an incremental UTF-8
+  decoder (a null byte or failed strict decode anywhere rejects the file) -
+  an earlier 8 KB sample missed binary bytes past the sample and silently
+  returned corrupted text (fixed). A multibyte character straddling a scan
+  chunk boundary is handled by the incremental decoder (no false positives).
+  Empty files (0 lines) return "" instead of erroring. Ranges larger than
+  5000 lines are streamed (only the shown lines are read); files larger than
+  50 MB are rejected.
 - After the JSON migration (§10), the `max_lines` Valve applies only to
   line-based text output: `read_file` and the Phase 3 diff tools
   (`show_commit`, `compare_commits`) plus `pull_repo`'s raw fallback.

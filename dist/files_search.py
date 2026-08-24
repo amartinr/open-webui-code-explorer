@@ -25,6 +25,7 @@ execution, and output capping. Do not re-implement any of this per tool.
 """
 
 import asyncio
+import codecs
 import fnmatch
 import json
 import logging
@@ -280,6 +281,38 @@ def _read_binary_sample(path: Path, size: int = 8192) -> bytes:
             return f.read(size)
     except OSError:
         return b""
+
+
+def _scan_encoding(path: Path, chunk: int = 65536) -> Optional[str]:
+    """Scan the WHOLE file for binary content: "binary" if a null byte is
+    found anywhere, "invalid_utf8" if strict UTF-8 decoding fails anywhere,
+    None if the file is valid UTF-8 text without null bytes.
+
+    Uses an incremental decoder so chunk boundaries never split a multibyte
+    character (a naive per-chunk decode would false-positive on a character
+    cut in half). This replaces the 8 KB sample check, which missed binary
+    bytes past the sample and silently returned corrupted text.
+    """
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(chunk)
+                if not block:
+                    break
+                if b"\x00" in block:
+                    return "binary"
+                try:
+                    dec.decode(block)
+                except UnicodeDecodeError:
+                    return "invalid_utf8"
+        try:
+            dec.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return "invalid_utf8"
+    except OSError:
+        return "binary"
+    return None
 
 
 def _is_binary(sample: bytes) -> bool:
@@ -824,15 +857,13 @@ class Tools:
         if size > MAX_READ_BYTES:
             raise ToolError(f"file too large: {path} ({size} bytes); maximum supported is {MAX_READ_BYTES}")
 
-        # Binary detection on a sample (DESIGN.md §7 Phase 2): null bytes or a
-        # failed UTF-8 decode mark the file as binary / non-text.
-        with open(file_path, "rb") as f:
-            sample = f.read(8192)
-        if b"\x00" in sample:
+        # Binary detection over the WHOLE file (DESIGN.md §7 Phase 2): a null
+        # byte or failed strict UTF-8 decode anywhere marks the file as
+        # binary / non-text. The old 8 KB sample missed bytes past the sample.
+        bad = _scan_encoding(file_path)
+        if bad == "binary":
             raise ToolError(f"binary file not supported: {path} (binary files are rejected)")
-        try:
-            sample.decode("utf-8")
-        except UnicodeDecodeError:
+        if bad == "invalid_utf8":
             raise ToolError(f"not a UTF-8 text file: {path} (only UTF-8 text is supported)")
 
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -841,6 +872,12 @@ class Tools:
         start_ = start if start is not None else 1
         if start_ < 1:
             raise ToolError(f"start must be >= 1, got {start_}")
+        if total == 0:
+            # Empty file: nothing to read. A default start (1) is fine; an
+            # explicit start > 1 is out of range.
+            if start is not None and start > 1:
+                raise ToolError(f"start {start} is beyond the end of the file (0 lines)")
+            return ""
         if start_ > total:
             raise ToolError(f"start {start_} is beyond the end of the file ({total} lines)")
         end_ = end if end is not None else total

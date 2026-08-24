@@ -156,15 +156,13 @@ class Tools:
         if size > MAX_READ_BYTES:
             raise ToolError(f"file too large: {path} ({size} bytes); maximum supported is {MAX_READ_BYTES}")
 
-        # Binary detection on a sample (DESIGN.md §7 Phase 2): null bytes or a
-        # failed UTF-8 decode mark the file as binary / non-text.
-        with open(file_path, "rb") as f:
-            sample = f.read(8192)
-        if b"\x00" in sample:
+        # Binary detection over the WHOLE file (DESIGN.md §7 Phase 2): a null
+        # byte or failed strict UTF-8 decode anywhere marks the file as
+        # binary / non-text. The old 8 KB sample missed bytes past the sample.
+        bad = _scan_encoding(file_path)
+        if bad == "binary":
             raise ToolError(f"binary file not supported: {path} (binary files are rejected)")
-        try:
-            sample.decode("utf-8")
-        except UnicodeDecodeError:
+        if bad == "invalid_utf8":
             raise ToolError(f"not a UTF-8 text file: {path} (only UTF-8 text is supported)")
 
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -173,6 +171,12 @@ class Tools:
         start_ = start if start is not None else 1
         if start_ < 1:
             raise ToolError(f"start must be >= 1, got {start_}")
+        if total == 0:
+            # Empty file: nothing to read. A default start (1) is fine; an
+            # explicit start > 1 is out of range.
+            if start is not None and start > 1:
+                raise ToolError(f"start {start} is beyond the end of the file (0 lines)")
+            return ""
         if start_ > total:
             raise ToolError(f"start {start_} is beyond the end of the file ({total} lines)")
         end_ = end if end is not None else total

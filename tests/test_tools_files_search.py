@@ -238,6 +238,54 @@ class TestReadFile:
         assert out.startswith("Error:")
         assert "binary" in out.lower()
 
+    async def test_empty_file_returns_empty(self, repos_path, source_repo):
+        """Regression: an empty file (0 lines) must return '', not fail with
+        'start 1 is beyond the end of the file'."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "empty.txt").write_text("")
+        out = await tools.read_file("testowner/testrepo", "empty.txt")
+        assert out == ""
+        # Explicit start=1 on an empty file is also fine; start>1 is a real error.
+        assert await tools.read_file("testowner/testrepo", "empty.txt", start=1) == ""
+        out = await tools.read_file("testowner/testrepo", "empty.txt", start=2)
+        assert out.startswith("Error:")
+        assert "0 lines" in out
+
+    async def test_binary_bytes_past_sample_rejected(self, repos_path, source_repo):
+        """Regression: a null byte AFTER the old 8 KB sample must still be
+        rejected (the old sample check silently returned corrupted text)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        with open(clone / "late_bin.bin", "wb") as f:
+            f.write(b"A" * 9000 + b"\x00\xff")
+        out = await tools.read_file("testowner/testrepo", "late_bin.bin")
+        assert out.startswith("Error:")
+        assert "binary" in out.lower()
+
+    async def test_invalid_utf8_past_sample_rejected(self, repos_path, source_repo):
+        """Regression: invalid UTF-8 AFTER the old 8 KB sample must be rejected
+        (not silently replaced with U+FFFD)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        with open(clone / "late_invalid.txt", "wb") as f:
+            f.write(b"B" * 9000 + b"\xff\xfe")
+        out = await tools.read_file("testowner/testrepo", "late_invalid.txt")
+        assert out.startswith("Error:")
+        assert "UTF-8" in out
+
+    async def test_multibyte_across_chunk_boundary(self, repos_path, source_repo):
+        """A multibyte UTF-8 char straddling the scan chunk boundary must not
+        cause a false 'invalid UTF-8' (incremental decoder handles it)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        with open(clone / "straddle.txt", "wb") as f:
+            f.write(b"C" * 65535 + "é".encode("utf-8"))
+        tools.valves.max_bytes = 200000  # line is ~65 KB; keep the é visible
+        out = await tools.read_file("testowner/testrepo", "straddle.txt", start=1, end=1)
+        assert not out.startswith("Error:")
+        assert "é" in out
+
     async def test_file_not_found(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         out = await tools.read_file("testowner/testrepo", "missing.py")

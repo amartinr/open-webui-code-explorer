@@ -23,6 +23,7 @@ execution, and output capping. Do not re-implement any of this per tool.
 """
 
 import asyncio
+import codecs
 import fnmatch
 import json
 import logging
@@ -278,6 +279,38 @@ def _read_binary_sample(path: Path, size: int = 8192) -> bytes:
             return f.read(size)
     except OSError:
         return b""
+
+
+def _scan_encoding(path: Path, chunk: int = 65536) -> Optional[str]:
+    """Scan the WHOLE file for binary content: "binary" if a null byte is
+    found anywhere, "invalid_utf8" if strict UTF-8 decoding fails anywhere,
+    None if the file is valid UTF-8 text without null bytes.
+
+    Uses an incremental decoder so chunk boundaries never split a multibyte
+    character (a naive per-chunk decode would false-positive on a character
+    cut in half). This replaces the 8 KB sample check, which missed binary
+    bytes past the sample and silently returned corrupted text.
+    """
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(chunk)
+                if not block:
+                    break
+                if b"\x00" in block:
+                    return "binary"
+                try:
+                    dec.decode(block)
+                except UnicodeDecodeError:
+                    return "invalid_utf8"
+        try:
+            dec.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return "invalid_utf8"
+    except OSError:
+        return "binary"
+    return None
 
 
 def _is_binary(sample: bytes) -> bool:
