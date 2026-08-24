@@ -23,6 +23,7 @@ execution, and output capping. Do not re-implement any of this per tool.
 """
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -49,6 +50,12 @@ TIMEOUT_PULL = 120
 TIMEOUT_READ = 10
 TIMEOUT_SEARCH = 30
 TIMEOUT_COMMIT = 30
+
+# read_file safety limits: files larger than MAX_READ_BYTES are rejected;
+# ranges larger than MAX_INLINE_LINES are streamed (only the shown lines are
+# read) instead of being read fully into memory.
+MAX_READ_BYTES = 50 * 1024 * 1024
+MAX_INLINE_LINES = 5000
 
 # Headless, non-interactive environment for every subprocess (DESIGN.md §9.7).
 # GIT_ASKPASS is deliberately removed (unset) rather than set to "".
@@ -221,6 +228,38 @@ def resolve_repos_path(valve_path: str) -> str:
     if env and env.strip():
         return env.strip()
     return DEFAULT_REPOS_PATH
+
+
+def parse_filter(filter_str: Optional[str]) -> tuple:
+    """Split a `filter` value into (includes, excludes) glob patterns.
+
+    A filter string may contain space-separated glob patterns; a leading "!"
+    marks an exclusion (DESIGN.md §6): "*.py !*.md" -> includes ["*.py"],
+    excludes ["*.md"].
+    """
+    if not filter_str or not filter_str.strip():
+        return [], []
+    includes: List[str] = []
+    excludes: List[str] = []
+    for pat in filter_str.split():
+        if pat.startswith("!"):
+            excludes.append(pat[1:])
+        else:
+            includes.append(pat)
+    return includes, excludes
+
+
+def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
+    """True iff `relpath` matches the include/exclude glob sets.
+
+    Used for the single-file case of list_files (fd-style semantics: globs are
+    matched against the full relative path).
+    """
+    if excludes and any(fnmatch.fnmatch(relpath, g) for g in excludes):
+        return False
+    if includes and not any(fnmatch.fnmatch(relpath, g) for g in includes):
+        return False
+    return True
 
 
 def repo_component_ok(component: str) -> bool:

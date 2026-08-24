@@ -11,8 +11,8 @@ design, security model, and acceptance criteria.
 | Script | Tools | Phase |
 |---|---|---|
 | **Repos** (`dist/repos.py`) | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | 1 (implemented) |
-| **Files & Search** (`dist/files_search.py`) | `list_files`, `read_file`, `search_text`, `search_symbol` | 2/3 (not yet) |
-| **Commits** (`dist/commits.py`) | `list_commits`, `show_commit`, `compare_commits` | 3 (not yet) |
+| **Files & Search** (`dist/files_search.py`) | `list_files`, `read_file`, `search_text` | 2 (implemented) |
+| **Commits** (`dist/commits.py`) | `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | 3 (not yet) |
 
 Each script is self-contained: `common.py` (the single source of truth for the
 security-critical logic) is inlined into every script at build time, so there
@@ -22,7 +22,8 @@ is no `import common` at runtime.
 
 - Python 3.10+ (build + tests).
 - Binaries on `PATH` (checked at tool load time, error surfaced at call time):
-  `git` (>= 2.39), `rg` (ripgrep), `fd`. Phase 1 uses only `git`.
+  `git` (>= 2.39), `rg` (ripgrep), `fd`. Phase 1 uses only `git`; Phase 2
+  uses `fd` and `rg`.
 
 ## Build
 

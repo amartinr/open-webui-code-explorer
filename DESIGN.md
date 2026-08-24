@@ -846,6 +846,24 @@ Decisions made (recorded for the record):
   diffs hurts readability. Errors keep the `Error:`/`Not found:`/`Timed out:`
   prefix contract (stable, parseable, instantly recognizable) rather than
   being JSON-encoded.
+- `read_file` reads with native Python I/O (open/read in `asyncio.to_thread`)
+  instead of `cat`/`sed` subprocesses: it does not widen the subprocess
+  allow-list, and binary detection is native (null byte in an 8 KB sample or a
+  failed strict UTF-8 decode rejects the file). Ranges larger than 5000 lines
+  are streamed (only the shown lines are read); files larger than 50 MB are
+  rejected.
+- `search_text` uses `rg --json` and parses the match/context/begin/end
+  messages: robust against paths containing `:` or spaces. Matches are sorted
+  in Python by (path, line) instead of relying on `--sort` (compatibility
+  with older ripgrep). Case-insensitive by default via `-i` (ripgrep is
+  case-sensitive by default, so the documented `case_sensitive=False` default
+  requires it).
+- `list_files` sorts items in Python instead of fd's `--sort` (same
+  compatibility reason). fd 10 interprets a single absolute PATH argument as
+  a PATTERN and errors out; the tool passes the match-all pattern `.` (no
+  filter) or relies on `--glob` (with filter) so fd takes the path as PATH.
+  fd's defaults are kept: `.gitignore` is respected and hidden files are not
+  shown (documented in the tool description).
 - `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
   `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at
