@@ -1,5 +1,5 @@
 """
-title: Code Explorer — Repos
+title: Code Explorer - Repos
 description: Clone, fetch, pull, and list code repositories for the meta model. Read-only with respect to source code; writes happen only inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
 """
@@ -218,7 +218,7 @@ def resolve_repos_path(valve_path: str) -> str:
 def repo_component_ok(component: str) -> bool:
     """True iff component matches ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ and is not "." or "..".
 
-    NOTE: do NOT use ^[\\w.-]+/... — that accepts "..", enabling path traversal.
+    NOTE: do NOT use ^[\\w.-]+/... - that accepts "..", enabling path traversal.
     """
     return bool(_REPO_COMPONENT_RE.match(component)) and component not in (".", "..")
 
@@ -362,7 +362,7 @@ class Tools:
 
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
-        nothing is modified — use fetch_repo, pull_repo, or list_repos instead.
+        nothing is modified - use fetch_repo, pull_repo, or list_repos instead.
         After cloning, the requested ref is checked out.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).

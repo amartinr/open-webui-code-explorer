@@ -209,7 +209,7 @@ def resolve_repos_path(valve_path: str) -> str:
 def repo_component_ok(component: str) -> bool:
     """True iff component matches ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ and is not "." or "..".
 
-    NOTE: do NOT use ^[\\w.-]+/... — that accepts "..", enabling path traversal.
+    NOTE: do NOT use ^[\\w.-]+/... - that accepts "..", enabling path traversal.
     """
     return bool(_REPO_COMPONENT_RE.match(component)) and component not in (".", "..")
 

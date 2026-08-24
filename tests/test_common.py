@@ -48,7 +48,7 @@ class TestResolveReposPath:
 
 
 # ---------------------------------------------------------------------------
-# repo_component_ok (DESIGN.md §5.6 — the path-traversal guard)
+# repo_component_ok (DESIGN.md §5.6 - the path-traversal guard)
 # ---------------------------------------------------------------------------
 
 
@@ -114,7 +114,7 @@ class TestResolveRepoRoot:
 
 
 # ---------------------------------------------------------------------------
-# resolve_path (DESIGN.md §5.6 — symlink escape guard)
+# resolve_path (DESIGN.md §5.6 - symlink escape guard)
 # ---------------------------------------------------------------------------
 
 
