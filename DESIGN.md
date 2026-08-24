@@ -556,7 +556,7 @@ Each phase is "done" only when all its criteria pass.
   functions, not a `Tools` class) and the community site `openwebui.com` for
   importable user tools. Note: the `open-webui/tools` GitHub repo referenced in
   earlier drafts does not exist.
-- **Required binaries** (must be in `PATH`): `git`, `rg` (ripgrep), `fd`.
+- **Required binaries** (must be in `PATH`): `git` (>= 2.39), `rg` (ripgrep), `fd`.
   Each script SHOULD check for them at startup and log a clear error if missing.
   All subprocess calls use the resolved absolute path of the binary.
 
@@ -763,7 +763,11 @@ intentionally not captured or surfaced: they are noise to the model.
 
 - `--no-progress` (or `-q`/`--quiet`) on `clone`/`fetch`/`pull` — suppress
   progress, which git otherwise writes to stderr.
-- `--no-advice` (global git flag) — suppress advice hints (e.g. "detached HEAD").
+- Do NOT pass `--no-advice` (a global git flag) to suppress advice hints: it
+  only exists since git 2.45 and breaks on the supported minimum (git 2.39).
+  Advice hints go to stderr, never pollute stdout, and are stripped from error
+  output by `trim_cause()`. Suppress a specific advice with the config form
+  (`-c advice.detachedHead=false`) where it actually matters.
 - `-c color.ui=never` — no ANSI color codes in `diff`/`log`/`show`/`status`
   output, regardless of any config.
 

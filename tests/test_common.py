@@ -265,6 +265,33 @@ class TestTrimCause:
         assert len(out) <= 300 + 3  # limit + ellipsis
 
 
+class TestGitArgs:
+    def test_only_config_flags_and_command_args(self):
+        """The ONLY global options git_args emits are the `-c key=value`
+        config forms, which git 2.39 (the minimum supported version) accepts.
+        Long global flags like --no-advice (git >= 2.45) are forbidden: they
+        break on older installs (regression: clone_repo failed with `unknown
+        option: --no-advice` on git 2.39.5)."""
+        forbidden = {"--no-advice", "--no-pager", "--paginate", "--exec-path", "--html-path"}
+        for args in [
+            git_args("status", "--porcelain"),
+            git_args("clone", "--no-progress", "url", "dir"),
+            git_args("-C", "/x", "fetch", "--all"),
+            git_args("-C", "/x", "-c", "advice.detachedHead=false", "checkout", "ref"),
+        ]:
+            # git_args always emits exactly: git, -c, key=value, then the
+            # caller's args (which may include -C/-c passthroughs and
+            # subcommand flags - none of which are long global flags).
+            assert args[0] == "git"
+            assert args[1] == "-c"
+            assert "=" in args[2]
+            assert not args[2].startswith("-")
+            assert not (forbidden & set(args))
+
+    def test_no_no_advice_anywhere(self):
+        assert "--no-advice" not in git_args("version")
+
+
 # ---------------------------------------------------------------------------
 # Error rendering (DESIGN.md §9.3)
 # ---------------------------------------------------------------------------

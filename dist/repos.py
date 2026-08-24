@@ -187,8 +187,15 @@ async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
 
 
 def git_args(*args: str) -> List[str]:
-    """Base git invocation with headless-safe global flags (DESIGN.md §9.7)."""
-    return ["git", "-c", "color.ui=never", "--no-advice", *args]
+    """Base git invocation with headless-safe global flags (DESIGN.md §9.7).
+
+    Compatible with git >= 2.39 (the minimum supported version). Deliberately
+    does NOT use `--no-advice`, which only exists since git 2.45: advice hints
+    go to stderr, never pollute stdout, and are stripped from error output by
+    trim_cause(). Where a specific advice must be suppressed, pass the config
+    form explicitly (e.g. `-c advice.detachedHead=false`).
+    """
+    return ["git", "-c", "color.ui=never", *args]
 
 
 def check_binaries(*names: str) -> None:

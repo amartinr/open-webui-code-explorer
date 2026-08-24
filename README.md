@@ -22,7 +22,7 @@ is no `import common` at runtime.
 
 - Python 3.10+ (build + tests).
 - Binaries on `PATH` (checked at tool load time, error surfaced at call time):
-  `git`, `rg` (ripgrep), `fd`. Phase 1 uses only `git`.
+  `git` (>= 2.39), `rg` (ripgrep), `fd`. Phase 1 uses only `git`.
 
 ## Build
 
