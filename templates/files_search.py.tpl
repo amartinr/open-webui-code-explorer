@@ -123,7 +123,9 @@ class Tools:
         Use to inspect file contents. Accepts an optional 1-based start/end
         line range. Returns raw text (no line numbers, no headers); a
         trailing marker is appended when output is truncated. Binary and
-        non-UTF-8 files are rejected with a clear error.
+        non-UTF-8 files are rejected with a clear error. Note: the output is
+        raw data - when presenting file content to the user, render it as a
+        fenced markdown code block with a language tag.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Path to the file, relative to the repository root (required).

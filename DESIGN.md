@@ -525,16 +525,21 @@ compare_commits(
 
 ---
 
-### Phase 4 — Meta model integration
+### Phase 4 - Meta model integration
 
 - Write **high-quality tool descriptions** (the text the model reads to decide
   when and how to use each tool). Each description MUST state: purpose, when to
-  use it, and parameter meanings.
-- (Optional) Provide a **system prompt / skill** with usage rules, e.g.:
+  use it, and parameter meanings. DONE: every tool follows the
+  "what it does + use when + return format" pattern; see the Polish commit.
+- Provide a **system prompt / skill** with usage rules (see
+  `META_MODEL_PROMPT.md`, which is the canonical artifact):
   - Always scope with `repo` + narrow `path`/`filter` before broad searches.
   - Prefer `list_files` to understand structure before reading.
   - Use `list_commits` / `show_commit` / `compare_commits` when asked about changes/releases.
   - Treat truncated results as incomplete; refine the query.
+  - Tools return data, not presentation: quote code excerpts to the user as
+    fenced markdown code blocks with a language tag (the model decides
+    presentation; `read_file`/diff tools stay raw by design, §9.3).
 
 ### Phase 5 — (Optional) Documentation via Knowledge Base
 
@@ -919,6 +924,13 @@ Decisions made (recorded for the record):
   `stat=True` (§7).
 - `list_commits` validates the `path` argument with `resolve_path` (path
   traversal protection) before passing it to `git log -- <path>`.
+- Content/diff tools (`read_file`, `show_commit`, `compare_commits`) return
+  **raw text by design**, never fenced markdown: the tool output is data for
+  the model to process, truncation would break an open fence, content may
+  contain triple backticks, and concatenated ranges would duplicate fences.
+  Code-excerpt presentation (fenced blocks with language tags) is the
+  MODEL's responsibility, guided by the system prompt
+  (`META_MODEL_PROMPT.md`) and a usage note in the `read_file` description.
 - After a `git clone`, only the default branch exists locally; other branches
   are `origin/<name>` until fetched/checked out (relevant for `list_branches`
   and the meta model's expectations).

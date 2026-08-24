@@ -18,6 +18,9 @@ Each script is self-contained: `common.py` (the single source of truth for the
 security-critical logic) is inlined into every script at build time, so there
 is no `import common` at runtime.
 
+`META_MODEL_PROMPT.md` contains the recommended system prompt for the meta
+model (usage rules + presentation guidance), as designed in Phase 4.
+
 ## Requirements
 
 - Python 3.10+ (build + tests).
