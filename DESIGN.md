@@ -142,7 +142,7 @@ by phase:
 |---|---|---|
 | **Repos** | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | Phase 1 |
 | **Files & Search** | `list_files`, `read_file`, `search_text`, `search_symbol` | Phase 2 + `search_symbol` in Phase 3 |
-| **Commits** | `list_commits`, `show_commit`, `compare_commits` | Phase 3 |
+| **Commits** | `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | Phase 3 |
 
 Rationale for this split:
 - **Per-script tool access in Open WebUI**: an operator can attach only the
@@ -153,7 +153,8 @@ Rationale for this split:
 
 Note: the "Files & Search" script is created in Phase 2 with `list_files`,
 `read_file`, and `search_text`. `search_symbol` is added to the same script in
-Phase 3 (not stubbed earlier).
+Phase 3 (not stubbed earlier). The "Commits" script is created in Phase 3
+complete with all five tools (not stubbed earlier).
 
 ### 5.5 Shared Valves (identical contract across the three scripts)
 
@@ -409,9 +410,11 @@ search_text(
 
 ---
 
-### Phase 3 — Comparative & symbolic: `search_symbol`, `list_commits`, `show_commit`, `compare_commits`
+### Phase 3 — Comparative & symbolic: `search_symbol`, `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits`
 
-> Goal: reasoning about changes and navigating code by symbol, not just raw text.
+> Goal: reasoning about changes and navigating code by symbol, not just raw text —
+> plus discovering the named refs (branches, tags) the history/comparison tools
+> operate on.
 
 #### `search_symbol`
 
@@ -428,6 +431,37 @@ search_symbol(
   methods, constants). Implementation detail: derive patterns per file extension
   or use `rg` with a curated set of regexes; do NOT run `ctags` unless
   explicitly added to the allow-list.
+- Capped by the `max_results` Valve.
+
+#### `list_branches`
+
+```
+list_branches(
+  repo:   str      # required: "<owner>/<name>"
+  remote: bool     # optional, default false: also include remote-tracking branches
+)
+```
+
+- Runs `git branch --no-color` (local branches, current marked with `*`); with
+  `remote=True`, `git branch --no-color -a`, adding remote-tracking refs as
+  `origin/<name>`. Relative to the checked-out clone; never contacts the
+  network (`origin/*` reflects the last fetch, not live state).
+- Sorted (git's default alphabetic order), capped by the `max_results` Valve.
+- Use before `clone_repo(ref=...)`, `list_commits`, or `compare_commits` to
+  discover which branch names exist instead of guessing.
+
+#### `list_tags`
+
+```
+list_tags(
+  repo:   str      # required: "<owner>/<name>"
+)
+```
+
+- Runs `git tag -l --sort=-creatordate` (newest first), so the most recent
+  tags appear before the `max_results` cap bites.
+- Use to see which release tags exist before `clone_repo(ref="release")`,
+  `compare_commits`, or `show_commit` on a tag.
 - Capped by the `max_results` Valve.
 
 #### `list_commits`
@@ -525,6 +559,9 @@ Each phase is "done" only when all its criteria pass.
 ### Phase 3
 
 - [ ] `search_symbol` locates definitions with reasonable precision.
+- [ ] `list_branches` lists local branches (current marked with `*`),
+      optionally including remote-tracking ones, capped.
+- [ ] `list_tags` lists tags newest-first, capped.
 - [ ] `list_commits` lists history, capped.
 - [ ] `show_commit` displays a single commit.
 - [ ] `compare_commits` shows changes between two refs, with `--stat` support.
@@ -569,7 +606,7 @@ open-webui-code-explorer/
   templates/
     repos.py.tpl         # script "Repos": clone_repo, fetch_repo, pull_repo, list_repos
     files_search.py.tpl  # script "Files & Search": list_files, read_file, search_text, search_symbol
-    commits.py.tpl       # script "Commits": list_commits, show_commit, compare_commits
+    commits.py.tpl       # script "Commits": list_branches, list_tags, list_commits, show_commit, compare_commits
   dist/                  # GENERATED, self-contained scripts (paste into admin UI)
     repos.py
     files_search.py
@@ -612,6 +649,9 @@ Every tool returns a single string, parseable and markdown-friendly.
   src/open_webui/app.py:42: def create_app():
   ```
 - `list_repos`: one line per clone, `owner/name  [branch]`.
+- `list_branches`: one line per branch, current marked with `*`, sorted; with
+  `remote=True` remote-tracking branches appear as `origin/<name>`.
+- `list_tags`: one line per tag, newest first.
 - `list_commits`: one commit per line (`hash subject`), capped.
 - `show_commit` / `compare_commits`: raw `git show` / `git diff` output (or the
   `--stat` summary when `stat=True`), capped.
@@ -641,7 +681,7 @@ cause: <optional, concise extracted reason (e.g. trimmed git stderr, exit code)>
 | `pull_repo` | 120 s |
 | `list_files`, `search_text`, `search_symbol` | 30 s |
 | `read_file` | 10 s |
-| `list_commits`, `show_commit`, `compare_commits` | 30 s |
+| `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | 30 s |
 
 On timeout, return `Error: timed out after Ns`. These are implementation defaults;
 they may be exposed later as admin Valves if needed.
@@ -790,6 +830,11 @@ Decisions made (recorded for the record):
   for "what changed between X and Y" this shows changes on `ref_b` since its
   divergence from `ref_a`. A two-dot (`..`) option may be added later if needed.
 - `clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
+- `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
+  model must be able to discover the named refs before pointing
+  `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at
+  them. `list_tags` sorts newest-first (`--sort=-creatordate`) so the
+  `max_results` cap shows the most recent releases first.
 - `clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
   when `url` is omitted; `url` overrides the remote, never the target directory
   (which always comes from the validated `repo`).
