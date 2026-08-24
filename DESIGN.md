@@ -210,16 +210,23 @@ def resolve_path(repo: str, path: str | None, repos_path: str) -> Path
 # any segment is ".."; or the resolved path, after .resolve(), escapes the repo
 # root (symlink escape). None → repo root.
 
-async def run_allowed(argv: list[str], timeout: int) -> subprocess.CompletedProcess
+async def run_allowed(argv: list[str], timeout: int) -> CommandResult
 # await asyncio.to_thread(subprocess.run, argv, shell=False, capture_output=True,
-#   text=True, timeout=timeout). Offload to a worker thread so the blocking call
-#   does not stall Open WebUI's event loop (backend is fully async since 0.9.0).
-# argv[0] MUST be one of the allow-listed binaries {"git", "rg", "fd"}.
+#   text=True, timeout=timeout, env=<headless env, §9.7>). Offload to a worker
+#   thread so the blocking call does not stall Open WebUI's event loop (backend
+#   is fully async since 0.9.0). argv[0] MUST be one of the allow-listed binaries
+#   {"git", "rg", "fd"}. Returns CommandResult(stdout, stderr, returncode) so
+#   tools capture BOTH pipes as data. TimeoutExpired → ToolError("timed out after Ns").
 ```
 
 `ToolError` is a shared exception mapped to a user-facing message (never a raw
 traceback). All tools go through these helpers for repo/path resolution and
 subprocess execution.
+
+The **capture-and-translate contract** is central to the design (§6, §9.3):
+`run_allowed` returns the raw pipes as *data* (never as the tool's return
+value); each tool then interprets that data and returns an agent-facing string.
+No tool ever returns raw `stdout`/`stderr` directly to the model.
 
 ---
 
@@ -248,8 +255,14 @@ All tools share these conventions. Implement them consistently.
   `max_bytes` are admin Valves (§5.5) and MUST NOT appear in tool schemas.
   Agent-facing parameters are limited to *semantic* inputs (paths, queries,
   filters, ranges, flags) that express intent.
-- **Output format:** plain text/markdown-friendly. Errors are returned as
-  structured messages, not raised exceptions that crash the tool.
+- **Output format:** plain text/markdown-friendly. Tools return a single
+  string that the model reads directly.
+- **Error handling:** a tool NEVER returns raw `stdout`/`stderr`. It captures
+  both pipes (§5.6), interprets the result, and returns an agent-facing
+  message. On success it returns the transformed output (sorted, capped,
+  marker-terminated). On failure it returns a structured error string of the
+  form `Error: <summary>` with an optional `cause:` line (§9.3) — never a
+  raised exception, never a raw traceback, never an uninterpreted stream dump.
 - **Determinism:** prefer stable ordering (e.g., `rg --sort path`, `fd`
   default order, `git log` default order).
 
@@ -603,8 +616,21 @@ Every tool returns a single string, parseable and markdown-friendly.
 - `show_commit` / `compare_commits`: raw `git show` / `git diff` output (or the
   `--stat` summary when `stat=True`), capped.
 
-Errors: return a plain string beginning with `Error:` (or `Not found:` / `Timed
-out:`), never a raised exception.
+Errors: return a plain string, never a raised exception. Use a stable,
+agent-readable shape:
+
+```
+Error: <one-line summary of what failed and why>
+cause: <optional, concise extracted reason (e.g. trimmed git stderr, exit code)>
+```
+
+- `Error:` is the only mandatory line; `cause:` is optional and included only
+  when it helps the agent correct its input (e.g. `fatal: repository
+  '...' not found`). Strip ANSI/progress/noise before including it.
+- Use `Not found:` for missing repos/files and `Timed out:` for timeouts
+  (§9.4), each followed by the same summary shape.
+- The tool captures stdout/stderr and *translates* them into this form; it
+  never dumps the raw pipes to the model.
 
 ### 9.4 Timeout policy
 
@@ -695,6 +721,46 @@ Key points (confirmed against current Open WebUI source):
   `__event_call__`, `__metadata__`, `__messages__`, `__files__`, `__model__`,
   `__oauth_token__` are injected only if declared in the signature. These tools
   are read-only and self-contained, so they typically need none of them.
+
+### 9.7 Headless, non-interactive subprocess policy
+
+These tools run server-side with no TTY and no human to answer prompts. Every
+subprocess (especially `git`) MUST run non-interactively so it can never block
+on a prompt, emit progress spam, page output, or localize text. This is
+enforced in exactly one place (`run_allowed`, §5.6) via a fixed environment and
+command-line flags — not re-implemented per tool. Progress events are
+intentionally not captured or surfaced: they are noise to the model.
+
+**Environment (set on every `subprocess.run`):**
+
+| Variable | Value | Effect |
+|---|---|---|
+| `GIT_TERMINAL_PROMPT` | `0` | Fail instead of prompting for credentials (HTTP/IMAP auth). The critical anti-hang guard. |
+| `GIT_ASKPASS` | (unset/empty) | No askpass helper can launch a GUI/terminal prompt. |
+| `GIT_SSH_COMMAND` | `ssh -o BatchMode=yes` | Disable SSH password/passphrase prompts for SSH remotes (fails fast instead of prompting). |
+| `GIT_PAGER` | `cat` | No pager, ever. |
+| `GIT_CONFIG_NOSYSTEM` | `1` | Ignore system gitconfig. |
+| `GIT_CONFIG_GLOBAL` | `/dev/null` | Ignore user global gitconfig (aliases, credential helpers, hooksPath, color). |
+| `GIT_OPTIONAL_LOCKS` | `0` | Read-only commands skip optional locks (no lock contention). |
+| `LC_ALL` | `C` | Stable, English, non-localized output. |
+
+**Command-line flags (per command):**
+
+- `--no-progress` (or `-q`/`--quiet`) on `clone`/`fetch`/`pull` — suppress
+  progress, which git otherwise writes to stderr.
+- `--no-advice` (global git flag) — suppress advice hints (e.g. "detached HEAD").
+- `-c color.ui=never` — no ANSI color codes in `diff`/`log`/`show`/`status`
+  output, regardless of any config.
+
+**Notes:**
+
+- With `capture_output=True`, stdout/stderr are pipes (not a TTY), so git
+  disables the pager and progress by default. The explicit settings above are
+  defense in depth: they also guard against a *global* gitconfig forcing
+  `color.ui=always`, a `core.pager`, or a `credential.helper` that would
+  otherwise prompt or pollute output.
+- Timeouts (§9.4) are the backstop: if a command somehow still blocks, it is
+  killed and the tool returns `Timed out:` — it never hangs waiting for input.
 
 ---
 
