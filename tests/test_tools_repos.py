@@ -405,6 +405,39 @@ class TestOpenWebUILoading:
         assert "import common" not in source
         assert "{{COMMON_CODE}}" not in source
 
+    def test_docstring_params_match_signature_and_are_single_line(self):
+        """Open WebUI parses docstrings line-by-line with
+        `:param (\w+):\s*(.+)` (parse_docstring in utils/tools.py), so a
+        continuation line indented under a `:param` is silently dropped and
+        truncates the description the model sees. Regression: every parameter
+        must be documented on ONE self-contained line (DESIGN.md §9.6), the
+        parsed `:param` set must equal the signature parameters, and each
+        description must end with terminal punctuation (a trailing comma or
+        cut-off sentence is a truncation bug)."""
+        import inspect
+        import re
+
+        param_pattern = re.compile(r":param (\w+):\s*(.+)")
+        dist_file = Path(__file__).resolve().parent.parent / "dist" / "repos.py"
+        module = types.ModuleType("repos_script")
+        exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
+        tools = module.Tools()
+
+        for name in ["clone_repo", "fetch_repo", "pull_repo", "list_repos"]:
+            func = getattr(tools, name)
+            doc = func.__doc__ or ""
+            sig_params = set(inspect.signature(func).parameters)
+            parsed = {}
+            for line in doc.splitlines():
+                m = param_pattern.match(line.strip())
+                if m:
+                    parsed[m.group(1)] = m.group(2)
+            # Every signature parameter documented exactly once, nothing extra.
+            assert set(parsed) == sig_params, f"{name}: :param lines {set(parsed)} != signature {sig_params}"
+            # No truncation: each description is complete on its line.
+            for pname, desc in parsed.items():
+                assert desc[-1:] in ".)!", f"{name}:{pname} description truncated or unterminated: {desc!r}"
+
 
 # ---------------------------------------------------------------------------
 # Configuration precedence (§5.2): Valve > env > default

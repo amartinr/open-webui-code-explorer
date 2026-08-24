@@ -717,6 +717,21 @@ Key points (confirmed against current Open WebUI source):
   `description:`, `required_open_webui_version:`, optional `requirements:`) plus
   `:param name: description` lines. Do not rely on `self.citation` (deprecated;
   it is read but nothing acts on it).
+- **`:param` lines MUST be single, self-contained lines.** Open WebUI parses
+  docstrings line-by-line with `re.compile(r':param (\w+):\s*(.+)')`
+  (`parse_docstring` in `backend/open_webui/utils/tools.py`): each line is
+  matched independently, so a continuation line indented under a `:param` is
+  silently dropped and the description the model sees is TRUNCATED at the end
+  of the first line. Never wrap a parameter description across lines; write
+  the complete description on the `:param` line itself. The tool's free-text
+  description ends at the first `:param`/`:return` line (`parse_description`),
+  so keep all prose before the first `:param`.
+- **Every parameter must have a `:param` line.** The schema description is
+  optional in Open WebUI (a missing one yields a param with no description),
+  but this project requires every parameter to be documented; the regression
+  test in `tests/test_tools_repos.py` asserts that the parsed `:param` set
+  equals the signature parameters and that each description ends with terminal
+  punctuation (a trailing `,` or a cut-off sentence is a truncation bug).
 - **Injected params are optional.** `__user__`, `__request__`, `__event_emitter__`,
   `__event_call__`, `__metadata__`, `__messages__`, `__files__`, `__model__`,
   `__oauth_token__` are injected only if declared in the signature. These tools

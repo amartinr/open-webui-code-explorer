@@ -48,10 +48,8 @@ class Tools:
         After cloning, the requested ref is checked out.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).
-        :param url: Optional full clone URL; overrides the default
-            https://github.com/<owner>/<name>.git.
-        :param ref: Optional branch, tag, or the special value "release",
-            which resolves to the most recent release tag.
+        :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git.
+        :param ref: Optional branch, tag, or the special value "release", which resolves to the most recent release tag.
         """
         try:
             return await self._clone_repo(repo, url, ref)
