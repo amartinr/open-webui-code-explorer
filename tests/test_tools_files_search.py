@@ -635,6 +635,27 @@ class TestOpenWebUILoading:
         assert "import common" not in source
         assert "{{COMMON_CODE}}" not in source
 
+    def test_path_params_warn_against_repo_prefix(self):
+        """The `path` params must steer the model away from the ambiguity of
+        passing the <owner>/<name> prefix in `path` (regression: an agent
+        passed 'owner/repo/README.md' as the path). Each must say so and give
+        an example (DESIGN.md §7 Phase 4)."""
+        dist_file = Path(__file__).resolve().parent.parent / "dist" / "files_search.py"
+        module = types.ModuleType("files_search_script")
+        exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
+        tools = module.Tools()
+        for name in ["list_files", "read_file", "search_text", "search_symbol"]:
+            doc = getattr(tools, name).__doc__ or ""
+            path_line = next(
+                (l for l in doc.splitlines() if l.strip().startswith(":param path:")), ""
+            )
+            assert "do NOT include" in path_line, f"{name}: path param lacks the prefix warning"
+            assert "\"/\"" in path_line, f"{name}: path param lacks a separator note"
+        # read_file carries an explicit call example in its description
+        # (wrapped across two docstring lines).
+        assert 'Example: read_file("owner/repo",' in getattr(tools, "read_file").__doc__
+        assert '"src/main.py").' in getattr(tools, "read_file").__doc__
+
     async def test_works_without_fd_rg_binaries(self, tmp_path, monkeypatch):
         """The whole point of the pure-Python implementation: the deployment
         environment has no fd/rg binaries. Simulate it by making shutil.which

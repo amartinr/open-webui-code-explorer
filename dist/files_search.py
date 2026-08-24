@@ -753,7 +753,7 @@ class Tools:
         default.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param path: Optional subdirectory or file; defaults to the repository root.
+        :param path: Optional subdirectory or file, relative to the repository root; do NOT include the "<owner>/<name>" prefix (that belongs in `repo`); always use "/" as separator (e.g. "src/main.py"); defaults to the repository root.
         :param max_depth: Optional maximum directory depth (0 = only the given path).
         :param filter: Optional space-separated glob patterns; a leading "!" excludes (e.g. "*.py !*.md").
         :param type: "file", "dir", or "all" (default "all").
@@ -821,15 +821,16 @@ class Tools:
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
-        Use to inspect file contents. Accepts an optional 1-based start/end
-        line range. Returns raw text (no line numbers, no headers); a
-        trailing marker is appended when output is truncated. Binary and
-        non-UTF-8 files are rejected with a clear error. Note: the output is
-        raw data - when presenting file content to the user, render it as a
-        fenced markdown code block with a language tag.
+        Use to inspect file contents. Example: read_file("owner/repo",
+        "src/main.py"). Accepts an optional 1-based start/end line range.
+        Returns raw text (no line numbers, no headers); a trailing marker is
+        appended when output is truncated. Binary and non-UTF-8 files are
+        rejected with a clear error. Note: the output is raw data - when
+        presenting file content to the user, render it as a fenced markdown
+        code block with a language tag.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param path: Path to the file, relative to the repository root (required).
+        :param path: File path INSIDE the repository, relative to its root; do NOT include the "<owner>/<name>" prefix (that belongs in `repo`); always use "/" as separator. Examples: "README.md", "src/main.py", "tests/test_x.py" (required).
         :param start: Optional 1-based first line to read (inclusive).
         :param end: Optional 1-based last line to read (inclusive).
         """
@@ -925,7 +926,7 @@ class Tools:
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Regular expression to search for (required).
-        :param path: Optional subdirectory or file to narrow the search.
+        :param path: Optional subdirectory or file to narrow the search, relative to the repository root; do NOT include the "<owner>/<name>" prefix; always use "/" as separator (e.g. "src/").
         :param filter: Optional space-separated glob patterns; a leading "!" excludes.
         :param context: Optional number of context lines around each match.
         :param case_sensitive: Optional; default False (case-insensitive).
@@ -993,7 +994,7 @@ class Tools:
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Symbol name or partial (required).
-        :param path: Optional subdirectory or file to narrow the search.
+        :param path: Optional subdirectory or file to narrow the search, relative to the repository root; do NOT include the "<owner>/<name>" prefix; always use "/" as separator (e.g. "src/").
         :param filter: Optional space-separated glob patterns; a leading "!" excludes.
         """
         try:

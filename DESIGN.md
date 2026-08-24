@@ -935,6 +935,13 @@ Decisions made (recorded for the record):
   Code-excerpt presentation (fenced blocks with language tags) is the
   MODEL's responsibility, guided by the system prompt
   (`META_MODEL_PROMPT.md`) and a usage note in the `read_file` description.
+- The `path` parameters of the Files & Search tools explicitly warn the model
+  NOT to include the `<owner>/<name>` prefix (it belongs in `repo`) and give
+  `"/"`-separated examples (e.g. `"src/main.py"`). Rationale: an agent using
+  the tools passed `owner/repo/README.md` as the `path`, an ambiguity the
+  earlier terse `:param path:` wording invited. The wording is kept on a
+  single line per `:param` (Open WebUI parses line-by-line) and a regression
+  test guards the warning + examples.
 - After a `git clone`, only the default branch exists locally; other branches
   are `origin/<name>` until fetched/checked out (relevant for `list_branches`
   and the meta model's expectations).
