@@ -900,7 +900,13 @@ Decisions made (recorded for the record):
   prefix), or a top-level `NAME =` assignment (constants). Case-sensitive
   because identifiers are case-sensitive in virtually every language. It is
   a heuristic, not a full parser; good precision for common languages, some
-  false positives/negatives on exotic syntax (recorded as expected).
+  false positives/negatives on exotic syntax (recorded as expected). The
+  pattern allows optional, repeatable modifiers/visibility keywords before
+  the definition keyword (`async def`, `pub fn`, `export default class`,
+  `public static void`) and an optional Go receiver (`func (r *R) Method()`);
+  a bug where `async def` definitions were silently missed (the keyword was
+  anchored directly after `^\s*`, so any modifier broke the match) was fixed
+  and covered by regression tests.
 - `list_branches` normalizes `git branch -a` output: remote-tracking refs are
   shown as `origin/<name>` (stripping the `remotes/` prefix) and the detached
   HEAD pseudo-entry `(HEAD detached at ...)` is skipped.

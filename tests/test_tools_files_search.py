@@ -461,6 +461,78 @@ class TestSearchSymbol:
         out = await tools.search_symbol("testowner/testrepo", "Deep", path="sub")
         assert len(parse_json(out)["items"]) == 1
 
+    async def test_finds_async_def(self, repos_path, source_repo):
+        """Regression: `async def` must match (modifier before the keyword)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "asyncmod.py").write_text(
+            "async def fetch_data():\n    pass\n\n"
+            "async def run_task() -> dict:\n    return {}\n"
+        )
+        out = await tools.search_symbol("testowner/testrepo", "fetch_data")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["path"] == "asyncmod.py"
+        assert result["items"][0]["text"] == "async def fetch_data():"
+
+    async def test_finds_async_method_with_return_type(self, repos_path, source_repo):
+        """Regression: indented `async def ... -> type:` must match."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "classmod.py").write_text(
+            "class Service:\n    async def run(self) -> dict:\n        return {}\n"
+        )
+        out = await tools.search_symbol("testowner/testrepo", "run")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["text"] == "    async def run(self) -> dict:"
+
+    async def test_finds_export_function(self, repos_path, source_repo):
+        """Regression: `export function` (JS/TS) must match."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "util.js").write_text("export function helper() {}\n")
+        out = await tools.search_symbol("testowner/testrepo", "helper")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["text"] == "export function helper() {}"
+
+    async def test_finds_pub_fn(self, repos_path, source_repo):
+        """Regression: `pub fn` (Rust) must match."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "lib.rs").write_text("pub fn compute() -> u32 { 1 }\n")
+        out = await tools.search_symbol("testowner/testrepo", "compute")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["text"] == "pub fn compute() -> u32 { 1 }"
+
+    async def test_finds_go_receiver(self, repos_path, source_repo):
+        """Regression: `func (r *R) Method()` (Go receiver) must match."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "svc.go").write_text(
+            "package svc\n\ntype R struct {}\n\nfunc (r *R) Method() int { return 0 }\n"
+        )
+        out = await tools.search_symbol("testowner/testrepo", "Method")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["text"] == "func (r *R) Method() int { return 0 }"
+
+    async def test_async_call_does_not_match_definition(self, repos_path, source_repo):
+        """Regression: an `await` call must NOT match (only definitions)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "useasync.py").write_text(
+            "async def real():\n    pass\n\n"
+            "result = await real()\n"
+        )
+        out = await tools.search_symbol("testowner/testrepo", "real")
+        result = parse_json(out)
+        # Only the definition line, not the `await real()` call.
+        assert len(result["items"]) == 1
+        assert result["items"][0]["line"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Open WebUI loading contract (DESIGN.md §9.1, §9.6)

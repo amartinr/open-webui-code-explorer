@@ -318,8 +318,16 @@ class Tools:
             "def|class|fn|func|function|type|struct|enum|trait|impl|interface|"
             "module|sub|procedure|macro|const|var|let|public|private|protected"
         )
+        _modifiers = (
+            "async|export|default|pub|static|suspend|extern|inline|final|"
+            "abstract|override|virtual|sealed|readonly"
+        )
+        # Optional, repeatable visibility/async modifiers before the keyword
+        # (async def, pub fn, export default class, public static void), then
+        # an optional receiver (Go: func (r *R) Method()), then the name.
         pattern = _compile_pattern(
-            rf"^\s*(?:(?:{_def_keywords})\s+)?{q}\w*(?:\s*[(:={{]|\b)",
+            rf"^\s*(?:(?:{_modifiers}|{_def_keywords})\s+)*"
+            rf"(?:\([^)]*\)\s*)?{q}\w*(?:\s*[(:={{]|\b)",
             case_sensitive=True,
             multiline=True,
         )
