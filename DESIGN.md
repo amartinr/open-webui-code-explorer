@@ -761,7 +761,17 @@ Key points (confirmed against current Open WebUI source):
   sees. Errors are returned as `Error: ...` strings, never raised.
 - **`Valves` is a nested `BaseModel`** instantiated in `__init__` as
   `self.valves = self.Valves()`; Open WebUI overwrites it with admin values at
-  load time. `UserValves` (optional) is exposed as `__user__["valves"]`.
+  load time. Confirmed against source: `load_tool_module_by_id`
+  (`backend/open_webui/utils/plugin.py`) returns `module.Tools()` (an
+  *instance*, not the raw module), and `get_tools`
+  (`backend/open_webui/utils/tools.py`) then runs
+  `module.valves = module.Valves(**admin_values)`; tools are invoked as
+  `getattr(module, fn)` (bound methods), so every cap read goes through the
+  injected `self.valves`. `UserValves` (optional) is exposed as
+  `__user__["valves"]`. The `valves` attribute is a non-callable instance, so
+  `get_functions_from_tool` never exposes it as a tool. The tests in
+  `tests/test_valves.py` enforce the identical contract across scripts and
+  simulate the injection flow end to end.
 - **Docstring conventions:** a top-level frontmatter docstring (`title:`,
   `description:`, `required_open_webui_version:`, optional `requirements:`) plus
   `:param name: description` lines. Do not rely on `self.citation` (deprecated;
@@ -852,6 +862,11 @@ Decisions made (recorded for the record):
   failed strict UTF-8 decode rejects the file). Ranges larger than 5000 lines
   are streamed (only the shown lines are read); files larger than 50 MB are
   rejected.
+- After the JSON migration (§10), the `max_lines` Valve applies only to
+  line-based text output: `read_file` and the Phase 3 diff tools
+  (`show_commit`, `compare_commits`) plus `pull_repo`'s raw fallback.
+  Structured JSON tools are capped by `max_results` (item count) and
+  `max_bytes` (via `json_output`). This is by design, not a lost valve.
 - `search_text` uses `rg --json` and parses the match/context/begin/end
   messages: robust against paths containing `:` or spaces. Matches are sorted
   in Python by (path, line) instead of relying on `--sort` (compatibility
