@@ -1,10 +1,8 @@
 """
-title: Code Explorer - Files & Search
-description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
+title: Code Explorer - Commits
+description: Inspect branches, tags, and commit history of cloned repositories for the meta model. Read-only; uses only the git binary with a headless environment.
 required_open_webui_version: 0.9.6
 """
-import itertools
-import os
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -683,6 +681,7 @@ def trim_cause(text: str, limit: int = 300) -> str:
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
+        check_binaries("git")
 
     class Valves(BaseModel):
         repos_path: str = Field(
@@ -690,7 +689,7 @@ class Tools:
             description="Base directory for repository clones. Empty -> $OWUI_REPOS_PATH -> /usr/local/src. A dedicated volume must be mounted there and the process needs read/write permission; this Valve is a logical override only.",
         )
         max_results: int = Field(
-            50, description="Cap on item counts (files, matches)."
+            50, description="Cap on item counts (commits, branches, tags)."
         )
         max_lines: int = Field(
             200, description="Cap on output lines. Whichever cap is hit first truncates."
@@ -700,74 +699,55 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # list_files
+    # list_branches
     # ------------------------------------------------------------------
 
-    async def list_files(
+    async def list_branches(
         self,
         repo: str,
-        path: Optional[str] = None,
-        max_depth: Optional[int] = None,
-        filter: Optional[str] = None,
-        type: Optional[str] = "all",
+        remote: bool = False,
     ) -> str:
-        """List files and directories under a path in a repository.
+        """List branches of a repository.
 
-        Use to explore repository structure before reading files. Returns
-        paths relative to the repository root, sorted. Respects .gitignore
-        (via the pathspec package when available); hidden files are not shown
-        by default.
+        Use to discover which branches exist before pointing clone_repo,
+        list_commits, show_commit, or compare_commits at a branch name.
+        Local branches by default; with remote=True, remote-tracking branches
+        appear as origin/<name> (reflecting the last fetch, never the live
+        network state).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param path: Optional subdirectory or file; defaults to the repository root.
-        :param max_depth: Optional maximum directory depth (0 = only the given path).
-        :param filter: Optional space-separated glob patterns; a leading "!" excludes (e.g. "*.py !*.md").
-        :param type: "file", "dir", or "all" (default "all").
+        :param remote: Optional; if True, also include remote-tracking branches.
         """
         try:
-            return await self._list_files(repo, path, max_depth, filter, type)
+            return await self._list_branches(repo, remote)
         except Exception as e:
             return error_string(e)
 
-    async def _list_files(
-        self,
-        repo: str,
-        path: Optional[str],
-        max_depth: Optional[int],
-        filter: Optional[str],
-        type: Optional[str],
-    ) -> str:
-        repos_path = resolve_repos_path(self.valves.repos_path)
-        root = resolve_repo_root(repo, repos_path)
+    async def _list_branches(self, repo: str, remote: bool) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        base = resolve_path(repo, path, repos_path)
-        if not base.exists():
-            raise ToolError(f"path not found: {path or '.'} in {repo}", kind="not_found")
-        if max_depth is not None and max_depth < 0:
-            raise ToolError(f"max_depth must be >= 0, got {max_depth}")
-        if type not in ("file", "dir", "all"):
-            raise ToolError(f"type must be 'file', 'dir', or 'all', got {type!r}")
-        includes, excludes = parse_filter(filter)
-
-        if base.is_file():
-            rel = str(base.relative_to(root))
-            ok = type != "dir" and glob_match(rel, includes, excludes)
-            items = [{"path": rel, "kind": "file"}] if ok else []
-            return json_output({"items": items}, self.valves.max_bytes)
-
+        args = git_args("-C", str(root), "branch", "--no-color")
+        if remote:
+            args.append("-a")
+        res = await run_allowed(args, TIMEOUT_SEARCH)
+        if res.returncode != 0:
+            raise ToolError(f"list branches failed: {repo}", cause=trim_cause(res.stderr))
         items = []
-        if base.is_dir():
-            for rel, is_dir in _walk_repo(root, base, max_depth):
-                if is_dir and type == "file":
-                    continue
-                if not is_dir and type == "dir":
-                    continue
-                if not glob_match(rel, includes, excludes):
-                    continue
-                if not is_dir and rel.startswith("."):
-                    continue
-                items.append({"path": rel, "kind": "dir" if is_dir else "file"})
-        items.sort(key=lambda i: i["path"])
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            current = line.startswith("*")
+            name = line[1:].strip() if current else line
+            # Detached HEAD shows a pseudo-entry like "* (HEAD detached at v1.0.0)".
+            if "HEAD detached" in name:
+                continue
+            if name.startswith("remotes/"):
+                name = name[len("remotes/"):]  # remotes/origin/main -> origin/main
+            # Skip the symbolic remote HEAD pseudo-ref (origin/HEAD -> ...).
+            if "->" in name:
+                continue
+            items.append({"branch": name, "current": current})
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
@@ -775,276 +755,203 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # read_file
+    # list_tags
     # ------------------------------------------------------------------
 
-    async def read_file(
-        self,
-        repo: str,
-        path: str,
-        start: Optional[int] = None,
-        end: Optional[int] = None,
-    ) -> str:
-        """Read a text file, or a line range of it, from a repository.
+    async def list_tags(self, repo: str) -> str:
+        """List tags of a repository, newest first.
 
-        Use to inspect file contents. Returns raw text (no line numbers, no
-        headers). Binary and non-UTF-8 files are rejected with a clear error.
+        Use to see which release tags exist before clone_repo(ref=\"release\"),
+        compare_commits, or show_commit on a tag.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param path: Path to the file, relative to the repository root (required).
-        :param start: Optional 1-based first line to read (inclusive).
-        :param end: Optional 1-based last line to read (inclusive).
         """
         try:
-            return await self._read_file(repo, path, start, end)
+            return await self._list_tags(repo)
         except Exception as e:
             return error_string(e)
 
-    async def _read_file(
-        self,
-        repo: str,
-        path: str,
-        start: Optional[int],
-        end: Optional[int],
-    ) -> str:
-        repos_path = resolve_repos_path(self.valves.repos_path)
-        root = resolve_repo_root(repo, repos_path)
+    async def _list_tags(self, repo: str) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        file_path = resolve_path(repo, path, repos_path)
-        if not file_path.exists():
-            raise ToolError(f"file not found: {path} in {repo}", kind="not_found")
-        if file_path.is_dir():
-            raise ToolError(f"{path} is a directory, not a file")
-        size = os.path.getsize(file_path)
-        if size > MAX_READ_BYTES:
-            raise ToolError(f"file too large: {path} ({size} bytes); maximum supported is {MAX_READ_BYTES}")
-
-        # Binary detection on a sample (DESIGN.md §7 Phase 2): null bytes or a
-        # failed UTF-8 decode mark the file as binary / non-text.
-        with open(file_path, "rb") as f:
-            sample = f.read(8192)
-        if b"\x00" in sample:
-            raise ToolError(f"binary file not supported: {path} (binary files are rejected)")
-        try:
-            sample.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ToolError(f"not a UTF-8 text file: {path} (only UTF-8 text is supported)")
-
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            total = sum(1 for _ in f)
-
-        start_ = start if start is not None else 1
-        if start_ < 1:
-            raise ToolError(f"start must be >= 1, got {start_}")
-        if start_ > total:
-            raise ToolError(f"start {start_} is beyond the end of the file ({total} lines)")
-        end_ = end if end is not None else total
-        if end_ < start_:
-            raise ToolError(f"end {end_} is before start {start_}")
-        end_ = min(end_, total)
-        range_total = end_ - start_ + 1
-
-        if range_total <= MAX_INLINE_LINES:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = list(itertools.islice(f, start_ - 1, end_))
-            return truncate_output("".join(lines), self.valves.max_lines, self.valves.max_bytes)
-
-        # Large range: read only the lines that will be shown, then cap.
-        shown = min(range_total, self.valves.max_lines)
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            head = list(itertools.islice(f, start_ - 1, start_ - 1 + shown))
-        text = "".join(head)
-        marker = f"\n... (truncated: showing {shown} of {range_total} lines)"
-        result = text + marker
-        if len(result.encode("utf-8")) > self.valves.max_bytes:
-            bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
-            budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
-            result = _trim_bytes(text, budget) + bmarker
-        return result
-
-    # ------------------------------------------------------------------
-    # search_text
-    # ------------------------------------------------------------------
-
-    async def search_text(
-        self,
-        repo: str,
-        query: str,
-        path: Optional[str] = None,
-        filter: Optional[str] = None,
-        context: Optional[int] = None,
-        case_sensitive: bool = False,
-    ) -> str:
-        """Search repository contents with a pure-Python regex engine.
-
-        Use to find where text or symbols appear. The query is a regular
-        expression. Returns one item per match with path, line, and matched
-        text (plus optional context lines). Honors .gitignore.
-
-        :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param query: Regular expression to search for (required).
-        :param path: Optional subdirectory or file to narrow the search.
-        :param filter: Optional space-separated glob patterns; a leading "!" excludes.
-        :param context: Optional number of context lines around each match.
-        :param case_sensitive: Optional; default False (case-insensitive).
-        """
-        try:
-            return await self._search_text(repo, query, path, filter, context, case_sensitive)
-        except Exception as e:
-            return error_string(e)
-
-    async def _search_text(
-        self,
-        repo: str,
-        query: str,
-        path: Optional[str],
-        filter: Optional[str],
-        context: Optional[int],
-        case_sensitive: bool,
-    ) -> str:
-        repos_path = resolve_repos_path(self.valves.repos_path)
-        root = resolve_repo_root(repo, repos_path)
-        self._ensure_repo_exists(root, repo)
-        if not query or not query.strip():
-            raise ToolError("query must not be empty")
-        if context is not None and context < 0:
-            raise ToolError(f"context must be >= 0, got {context}")
-        base = resolve_path(repo, path, repos_path) if path else root
-        if not base.exists():
-            raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
-        includes, excludes = parse_filter(filter)
-        pattern = _compile_pattern(query, case_sensitive)
-
-        items = []
-        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-            _, text = _binary_or_readable(fp)
-            _search_in_text(pattern, text, 0, context or 0, rel_f, items)
-
-        items.sort(key=lambda i: (i["path"], i.get("line") or 0))
-        data: dict = {"items": items}
-        if len(items) > self.valves.max_results:
-            data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
-            data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
-
-    # ------------------------------------------------------------------
-    # search_symbol
-    # ------------------------------------------------------------------
-
-    async def search_symbol(
-        self,
-        repo: str,
-        query: str,
-        path: Optional[str] = None,
-        filter: Optional[str] = None,
-    ) -> str:
-        """Find definitions of a symbol (function, class, method, constant).
-
-        Use to locate where a symbol is DEFINED rather than mentioned. Searches
-        with language-aware patterns for definitions (def/class/fn/func/type/
-        struct/enum/impl/interface/module/const/var/let... plus top-level
-        `NAME =` assignments). Case-sensitive by default, since identifiers are
-        case-sensitive in virtually every language.
-
-        :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param query: Symbol name or partial (required).
-        :param path: Optional subdirectory or file to narrow the search.
-        :param filter: Optional space-separated glob patterns; a leading "!" excludes.
-        """
-        try:
-            return await self._search_symbol(repo, query, path, filter)
-        except Exception as e:
-            return error_string(e)
-
-    async def _search_symbol(
-        self,
-        repo: str,
-        query: str,
-        path: Optional[str],
-        filter: Optional[str],
-    ) -> str:
-        repos_path = resolve_repos_path(self.valves.repos_path)
-        root = resolve_repo_root(repo, repos_path)
-        self._ensure_repo_exists(root, repo)
-        if not query or not query.strip():
-            raise ToolError("query must not be empty")
-        base = resolve_path(repo, path, repos_path) if path else root
-        if not base.exists():
-            raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
-        includes, excludes = parse_filter(filter)
-
-        # Definition patterns: a keyword followed by the symbol name, or a
-        # top-level `NAME =` assignment (constants). Case-sensitive (symbols).
-        q = re.escape(query.strip())
-        _def_keywords = (
-            "def|class|fn|func|function|type|struct|enum|trait|impl|interface|"
-            "module|sub|procedure|macro|const|var|let|public|private|protected"
+        # Newest-first by version (semver-aware). --sort=-creatordate is
+        # unreliable when tags share a timestamp, and would leave ties in
+        # arbitrary/alphabetical order.
+        res = await run_allowed(
+            git_args("-C", str(root), "tag", "-l", "--sort=-version:refname"),
+            TIMEOUT_SEARCH,
         )
-        pattern = _compile_pattern(
-            rf"^\s*(?:(?:{_def_keywords})\s+)?{q}\w*(?:\s*[(:={{]|\b)",
-            case_sensitive=True,
-            multiline=True,
-        )
+        if res.returncode != 0:
+            raise ToolError(f"list tags failed: {repo}", cause=trim_cause(res.stderr))
+        tags = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+        data: dict = {"items": tags}
+        if len(tags) > self.valves.max_results:
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(tags)}
+            data["items"] = tags[: self.valves.max_results]
+        return json_output(data, self.valves.max_bytes)
 
+    # ------------------------------------------------------------------
+    # list_commits
+    # ------------------------------------------------------------------
+
+    async def list_commits(
+        self,
+        repo: str,
+        ref_a: Optional[str] = None,
+        ref_b: Optional[str] = None,
+        path: Optional[str] = None,
+    ) -> str:
+        """List commits, optionally between two refs, optionally for a path.
+
+        Use to explore commit history. With no refs, shows the current HEAD
+        history. With ref_a and ref_b, shows commits reachable from ref_b but
+        not from ref_a (git's ref_a..ref_b range). Capable of narrowing to a
+        single file or directory.
+
+        :param repo: "<owner>/<name>" of an already-cloned repository.
+        :param ref_a: Optional start ref (branch, tag, or commit).
+        :param ref_b: Optional end ref (branch, tag, or commit).
+        :param path: Optional path to narrow the history to.
+        """
+        try:
+            return await self._list_commits(repo, ref_a, ref_b, path)
+        except Exception as e:
+            return error_string(e)
+
+    async def _list_commits(
+        self,
+        repo: str,
+        ref_a: Optional[str],
+        ref_b: Optional[str],
+        path: Optional[str],
+    ) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
+        self._ensure_repo_exists(root, repo)
+        if path is not None:
+            resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
+        args = git_args("-C", str(root), "log", "--oneline", "--no-decorate")
+        if ref_a and ref_b:
+            args.append(f"{ref_a}..{ref_b}")
+        elif ref_b:
+            args.append(ref_b)
+        if path:
+            args += ["--", path]
+        res = await run_allowed(args, TIMEOUT_SEARCH)
+        if res.returncode != 0:
+            raise ToolError(f"list commits failed: {repo}", cause=trim_cause(res.stderr))
         items = []
-        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-            _, text = _binary_or_readable(fp)
-            _search_in_text(pattern, text, 0, 0, rel_f, items)
-
-        items.sort(key=lambda i: (i["path"], i.get("line") or 0))
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" ", 1)
+            items.append({"hash": parts[0], "subject": parts[1] if len(parts) > 1 else ""})
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
+
+    # ------------------------------------------------------------------
+    # show_commit
+    # ------------------------------------------------------------------
+
+    async def show_commit(
+        self,
+        repo: str,
+        commit: str,
+        path: Optional[str] = None,
+    ) -> str:
+        """Show a single commit (metadata + diff).
+
+        Use to inspect what a specific commit changed. Returns raw git show
+        output (commit message, author, date, and the diff), capped by the
+        max_lines/max_bytes Valves with a truncation marker.
+
+        :param repo: "<owner>/<name>" of an already-cloned repository.
+        :param commit: Commit hash or ref (branch, tag) to show (required).
+        :param path: Optional path to narrow the shown diff to.
+        """
+        try:
+            return await self._show_commit(repo, commit, path)
+        except Exception as e:
+            return error_string(e)
+
+    async def _show_commit(self, repo: str, commit: str, path: Optional[str]) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
+        self._ensure_repo_exists(root, repo)
+        if not commit or not commit.strip():
+            raise ToolError("commit must not be empty")
+        if path is not None:
+            resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
+        args = git_args("-C", str(root), "show", commit)
+        if path:
+            args += ["--", path]
+        res = await run_allowed(args, TIMEOUT_SEARCH)
+        if res.returncode != 0:
+            raise ToolError(f"show commit failed: {commit!r}", cause=trim_cause(res.stderr))
+        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
+
+    # ------------------------------------------------------------------
+    # compare_commits
+    # ------------------------------------------------------------------
+
+    async def compare_commits(
+        self,
+        repo: str,
+        ref_a: str,
+        ref_b: str,
+        path: Optional[str] = None,
+        stat: bool = False,
+    ) -> str:
+        """Compare changes between two refs (three-dot diff by default).
+
+        Use to see what changed between two branches, tags, or commits. Uses
+        the three-dot (merge-base) diff: shows changes on ref_b since its
+        divergence from ref_a. With stat=True, returns the --stat summary
+        instead of the full diff. Returns raw git diff output, capped.
+
+        :param repo: "<owner>/<name>" of an already-cloned repository.
+        :param ref_a: First ref (branch, tag, or commit) (required).
+        :param ref_b: Second ref (branch, tag, or commit) (required).
+        :param path: Optional path to narrow the diff to.
+        :param stat: Optional; if True, return the --stat summary only.
+        """
+        try:
+            return await self._compare_commits(repo, ref_a, ref_b, path, stat)
+        except Exception as e:
+            return error_string(e)
+
+    async def _compare_commits(
+        self,
+        repo: str,
+        ref_a: str,
+        ref_b: str,
+        path: Optional[str],
+        stat: bool,
+    ) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
+        self._ensure_repo_exists(root, repo)
+        if not ref_a or not ref_a.strip() or not ref_b or not ref_b.strip():
+            raise ToolError("ref_a and ref_b are required")
+        if path is not None:
+            resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
+        args = git_args("-C", str(root), "diff")
+        if stat:
+            args.append("--stat")
+        args.append(f"{ref_a}...{ref_b}")
+        if path:
+            args += ["--", path]
+        res = await run_allowed(args, TIMEOUT_SEARCH)
+        if res.returncode != 0:
+            raise ToolError(
+                f"compare failed: {ref_a}...{ref_b}", cause=trim_cause(res.stderr)
+            )
+        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
     # shared internals
     # ------------------------------------------------------------------
-
-    def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
-        """Yield (rel_path, Path) for every text file under `base` that passes
-        the .gitignore and filter globs. Shared by search_text/search_symbol."""
-        spec = _load_ignore_spec(root)
-        if base.is_file():
-            rel_f = _try_decode_rel(base, root)
-            if not glob_match(rel_f, includes, excludes):
-                return
-            if _is_binary_path(base):
-                return
-            yield rel_f, base
-            return
-        for dirpath, dirnames, filenames in os.walk(base):
-            dp = Path(dirpath)
-            dirnames[:] = [d for d in dirnames if d not in (".git", ".hg", ".svn")]
-            try:
-                rel_dp = dp.relative_to(root).as_posix()
-            except ValueError:
-                rel_dp = dp.as_posix()
-            if rel_dp != ".":
-                parts = rel_dp.split("/")
-                if any(p in (".git", ".hg", ".svn") for p in parts):
-                    dirnames[:] = []
-                    continue
-                if _ignore_match(spec, rel_dp, True):
-                    dirnames[:] = []
-                    continue
-            kept = []
-            for d in dirnames:
-                rel_d = rel_dp + "/" + d if rel_dp != "." else d
-                if not _ignore_match(spec, rel_d, True):
-                    kept.append(d)
-            dirnames[:] = kept
-            for fname in filenames:
-                rel_f = rel_dp + "/" + fname if rel_dp != "." else fname
-                if _ignore_match(spec, rel_f, False):
-                    continue
-                if not glob_match(rel_f, includes, excludes):
-                    continue
-                fp = dp / fname
-                if _is_binary_path(fp):
-                    continue
-                yield rel_f, fp
 
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():

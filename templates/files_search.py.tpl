@@ -247,52 +247,81 @@ class Tools:
         includes, excludes = parse_filter(filter)
         pattern = _compile_pattern(query, case_sensitive)
 
-        spec = _load_ignore_spec(root)
         items = []
-        if base.is_file():
-            is_bin, text = _binary_or_readable(base)
-            if not is_bin:
-                if glob_match(base.relative_to(root).as_posix(), includes, excludes):
-                    _search_in_text(pattern, text, 0, context or 0, base.relative_to(root).as_posix(), items)
-        elif base.is_dir():
-            depth_base = base.relative_to(root).as_posix()
-            depth_base = 0 if depth_base == "." else depth_base.count("/") + 1
-            for dirpath, dirnames, filenames in os.walk(base):
-                dp = Path(dirpath)
-                dirnames[:] = [d for d in dirnames if d not in (".git", ".hg", ".svn")]
-                try:
-                    rel_dp = dp.relative_to(root).as_posix()
-                except ValueError:
-                    rel_dp = dp.as_posix()
-                if rel_dp != ".":
-                    parts = rel_dp.split("/")
-                    if any(p in (".git", ".hg", ".svn") for p in parts):
-                        dirnames[:] = []
-                        continue
-                    if _ignore_match(spec, rel_dp, True):
-                        dirnames[:] = []
-                        continue
-                kept = []
-                for d in dirnames:
-                    rel_d = rel_dp + "/" + d if rel_dp != "." else d
-                    if not _ignore_match(spec, rel_d, True):
-                        kept.append(d)
-                dirnames[:] = kept
-                for fname in filenames:
-                    rel_f = rel_dp + "/" + fname if rel_dp != "." else fname
-                    if _ignore_match(spec, rel_f, False):
-                        continue
-                    if not glob_match(rel_f, includes, excludes):
-                        continue
-                    fp = dp / fname
-                    if _is_binary_path(fp):
-                        continue
-                    if context or 1:  # full-content scan for big files
-                        # Read the file as text; large files stream via chunks.
-                        _, text = _binary_or_readable(fp)
-                        _search_in_text(pattern, text, 0, context or 0, rel_f, items)
-        else:
+        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+            _, text = _binary_or_readable(fp)
+            _search_in_text(pattern, text, 0, context or 0, rel_f, items)
+
+        items.sort(key=lambda i: (i["path"], i.get("line") or 0))
+        data: dict = {"items": items}
+        if len(items) > self.valves.max_results:
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
+            data["items"] = items[: self.valves.max_results]
+        return json_output(data, self.valves.max_bytes)
+
+    # ------------------------------------------------------------------
+    # search_symbol
+    # ------------------------------------------------------------------
+
+    async def search_symbol(
+        self,
+        repo: str,
+        query: str,
+        path: Optional[str] = None,
+        filter: Optional[str] = None,
+    ) -> str:
+        """Find definitions of a symbol (function, class, method, constant).
+
+        Use to locate where a symbol is DEFINED rather than mentioned. Searches
+        with language-aware patterns for definitions (def/class/fn/func/type/
+        struct/enum/impl/interface/module/const/var/let... plus top-level
+        `NAME =` assignments). Case-sensitive by default, since identifiers are
+        case-sensitive in virtually every language.
+
+        :param repo: "<owner>/<name>" of an already-cloned repository.
+        :param query: Symbol name or partial (required).
+        :param path: Optional subdirectory or file to narrow the search.
+        :param filter: Optional space-separated glob patterns; a leading "!" excludes.
+        """
+        try:
+            return await self._search_symbol(repo, query, path, filter)
+        except Exception as e:
+            return error_string(e)
+
+    async def _search_symbol(
+        self,
+        repo: str,
+        query: str,
+        path: Optional[str],
+        filter: Optional[str],
+    ) -> str:
+        repos_path = resolve_repos_path(self.valves.repos_path)
+        root = resolve_repo_root(repo, repos_path)
+        self._ensure_repo_exists(root, repo)
+        if not query or not query.strip():
+            raise ToolError("query must not be empty")
+        base = resolve_path(repo, path, repos_path) if path else root
+        if not base.exists():
             raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
+        includes, excludes = parse_filter(filter)
+
+        # Definition patterns: a keyword followed by the symbol name, or a
+        # top-level `NAME =` assignment (constants). Case-sensitive (symbols).
+        q = re.escape(query.strip())
+        _def_keywords = (
+            "def|class|fn|func|function|type|struct|enum|trait|impl|interface|"
+            "module|sub|procedure|macro|const|var|let|public|private|protected"
+        )
+        pattern = _compile_pattern(
+            rf"^\s*(?:(?:{_def_keywords})\s+)?{q}\w*(?:\s*[(:={{]|\b)",
+            case_sensitive=True,
+            multiline=True,
+        )
+
+        items = []
+        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+            _, text = _binary_or_readable(fp)
+            _search_in_text(pattern, text, 0, 0, rel_f, items)
 
         items.sort(key=lambda i: (i["path"], i.get("line") or 0))
         data: dict = {"items": items}
@@ -304,6 +333,50 @@ class Tools:
     # ------------------------------------------------------------------
     # shared internals
     # ------------------------------------------------------------------
+
+    def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
+        """Yield (rel_path, Path) for every text file under `base` that passes
+        the .gitignore and filter globs. Shared by search_text/search_symbol."""
+        spec = _load_ignore_spec(root)
+        if base.is_file():
+            rel_f = _try_decode_rel(base, root)
+            if not glob_match(rel_f, includes, excludes):
+                return
+            if _is_binary_path(base):
+                return
+            yield rel_f, base
+            return
+        for dirpath, dirnames, filenames in os.walk(base):
+            dp = Path(dirpath)
+            dirnames[:] = [d for d in dirnames if d not in (".git", ".hg", ".svn")]
+            try:
+                rel_dp = dp.relative_to(root).as_posix()
+            except ValueError:
+                rel_dp = dp.as_posix()
+            if rel_dp != ".":
+                parts = rel_dp.split("/")
+                if any(p in (".git", ".hg", ".svn") for p in parts):
+                    dirnames[:] = []
+                    continue
+                if _ignore_match(spec, rel_dp, True):
+                    dirnames[:] = []
+                    continue
+            kept = []
+            for d in dirnames:
+                rel_d = rel_dp + "/" + d if rel_dp != "." else d
+                if not _ignore_match(spec, rel_d, True):
+                    kept.append(d)
+            dirnames[:] = kept
+            for fname in filenames:
+                rel_f = rel_dp + "/" + fname if rel_dp != "." else fname
+                if _ignore_match(spec, rel_f, False):
+                    continue
+                if not glob_match(rel_f, includes, excludes):
+                    continue
+                fp = dp / fname
+                if _is_binary_path(fp):
+                    continue
+                yield rel_f, fp
 
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():

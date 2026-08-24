@@ -30,6 +30,7 @@ REQUIRED_VALVES = {
 # Which scripts exist and what max_results is capped on (per-script wording,
 # allowed to differ; the field itself must still be identical).
 SCRIPTS = [
+    "commits.py",
     "files_search.py",
     "repos.py",
 ]

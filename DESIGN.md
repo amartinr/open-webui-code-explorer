@@ -892,11 +892,35 @@ Decisions made (recorded for the record):
   environments that only have git + Python, which is the deployment target
   (§9.1). Performance is adequate for code repos: list_files ~16 ms and
   search_text ~50 ms on ~2000 files (measured).
+- **`search_symbol` uses a curated definition pattern**, not ctags/tree-sitter:
+  a case-sensitive regex that matches a leading definition keyword (`def`,
+  `class`, `fn`, `func`, `function`, `type`, `struct`, `enum`, `trait`,
+  `impl`, `interface`, `module`, `sub`, `procedure`, `macro`, `const`, `var`,
+  `let`, `public`, `private`, `protected`) followed by the query (as a
+  prefix), or a top-level `NAME =` assignment (constants). Case-sensitive
+  because identifiers are case-sensitive in virtually every language. It is
+  a heuristic, not a full parser; good precision for common languages, some
+  false positives/negatives on exotic syntax (recorded as expected).
+- `list_branches` normalizes `git branch -a` output: remote-tracking refs are
+  shown as `origin/<name>` (stripping the `remotes/` prefix) and the detached
+  HEAD pseudo-entry `(HEAD detached at ...)` is skipped.
+- `list_tags` uses `--sort=-version:refname` (semver-aware, newest first)
+  instead of `--sort=-creatordate`: the latter is unreliable when tags share
+  a timestamp and leaves ties in alphabetical order.
+- `show_commit` runs `git show <commit>` (full diff, matching §7), not
+  `--stat`; the diff is capped by `max_lines`/`max_bytes`. `compare_commits`
+  uses the three-dot `ref_a...ref_b` diff by default and `--stat` when
+  `stat=True` (§7).
+- `list_commits` validates the `path` argument with `resolve_path` (path
+  traversal protection) before passing it to `git log -- <path>`.
+- After a `git clone`, only the default branch exists locally; other branches
+  are `origin/<name>` until fetched/checked out (relevant for `list_branches`
+  and the meta model's expectations).
 - `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
   `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at
-  them. `list_tags` sorts newest-first (`--sort=-creatordate`) so the
-  `max_results` cap shows the most recent releases first.
+  them. `list_tags` sorts newest-first by version (`--sort=-version:refname`)
+  so the `max_results` cap shows the most recent releases first.
 - `clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
   when `url` is omitted; `url` overrides the remote, never the target directory
   (which always comes from the validated `repo`).

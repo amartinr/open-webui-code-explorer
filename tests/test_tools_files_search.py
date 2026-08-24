@@ -401,6 +401,68 @@ class TestSearchText:
 
 
 # ---------------------------------------------------------------------------
+# search_symbol
+# ---------------------------------------------------------------------------
+
+
+class TestSearchSymbol:
+    async def test_finds_definitions(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "hello")
+        result = parse_json(out)
+        items = result["items"]
+        assert len(items) == 1
+        assert items[0]["path"] == "hello.py"
+        assert items[0]["line"] == 1
+        assert items[0]["text"] == "def hello():"
+
+    async def test_finds_class(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "Deep")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["path"] == "sub/deep.py"
+        assert result["items"][0]["text"] == "class Deep:"
+
+    async def test_partial_match(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "worl")
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["items"][0]["text"] == "def world(x):"
+
+    async def test_case_sensitive(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "HELLO")
+        result = parse_json(out)
+        assert result["items"] == []
+
+    async def test_does_not_match_calls_or_mentions(self, repos_path, source_repo):
+        """Definitions only: a call `hello()` must not match the definition."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "use.py").write_text("x = hello()\n")
+        out = await tools.search_symbol("testowner/testrepo", "hello")
+        result = parse_json(out)
+        # Only the def in hello.py, not the call in use.py.
+        assert len(result["items"]) == 1
+        assert result["items"][0]["path"] == "hello.py"
+
+    async def test_empty_query_rejected(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "   ")
+        assert out.startswith("Error:")
+
+    async def test_path_narrowing(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.search_symbol("testowner/testrepo", "def", path="sub")
+        result = parse_json(out)
+        assert result["items"] == []  # no 'def' definition in sub
+        out = await tools.search_symbol("testowner/testrepo", "Deep", path="sub")
+        assert len(parse_json(out)["items"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Open WebUI loading contract (DESIGN.md §9.1, §9.6)
 # ---------------------------------------------------------------------------
 
@@ -420,8 +482,8 @@ class TestOpenWebUILoading:
             and not func.startswith("_")
             and not inspect.isclass(getattr(tools, func))
         ]
-        # search_symbol is deliberately NOT present until Phase 3 (§5.4).
-        assert sorted(discovered) == ["list_files", "read_file", "search_text"]
+        # search_symbol was added in Phase 3 (§5.4).
+        assert sorted(discovered) == ["list_files", "read_file", "search_symbol", "search_text"]
         for name in discovered:
             assert getattr(tools, name).__doc__
 
