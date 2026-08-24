@@ -771,6 +771,21 @@ Decisions made (recorded for the record):
   for "what changed between X and Y" this shows changes on `ref_b` since its
   divergence from `ref_a`. A two-dot (`..`) option may be added later if needed.
 - `clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
+- `clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
+  when `url` is omitted; `url` overrides the remote, never the target directory
+  (which always comes from the validated `repo`).
+- On `git clone` failure, `clone_repo` best-effort removes the partial clone
+  directory it just created (only when it is not a valid git repo). Without
+  this, a failed clone would permanently block that `<owner>/<name>`. This is
+  the only non-git write, and it is confined to `<repos_path>`.
+- Truncation markers (§5.5): line caps append `... (truncated: showing N of M
+  lines)`; when only the byte cap binds, a bare `showing N of M` would be
+  misleading (N == M), so the marker becomes `... (truncated: byte cap of B
+  reached; showing first B of T bytes)`.
+- `Tools` methods are split public (discovered by Open WebUI, wraps the impl
+  in the error contract) / private (`_impl`, raises `ToolError`); private
+  methods are excluded from tool discovery by `get_functions_from_tool`
+  (underscore filter).
 
 Still open:
 - [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
