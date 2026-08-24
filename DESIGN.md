@@ -180,9 +180,12 @@ These caps are **infrastructure/safety policy** (protect against huge outputs,
 timeouts, and context exhaustion), so they belong to the operator, not the
 agent. The agent never passes them as parameters.
 
-When a cap truncates output, the tool MUST append a marker like
-`... (truncated: showing N of M)` so the agent knows results are incomplete and
-can refine its query instead of assuming it saw everything.
+When a cap truncates output, the tool MUST make that explicit so the agent
+knows results are incomplete and can refine its query instead of assuming it
+saw everything. Structured (JSON) tools carry a `truncated` field
+(`{"shown": N, "total": M}`, plus `"reason"` when the binding cap is not the
+item count); raw-text tools (`read_file`, `show_commit`, `compare_commits`)
+append the trailing marker `... (truncated: showing N of M)`.
 
 ### 5.6 Shared helper contract
 
@@ -256,8 +259,14 @@ All tools share these conventions. Implement them consistently.
   `max_bytes` are admin Valves (§5.5) and MUST NOT appear in tool schemas.
   Agent-facing parameters are limited to *semantic* inputs (paths, queries,
   filters, ranges, flags) that express intent.
-- **Output format:** plain text/markdown-friendly. Tools return a single
-  string that the model reads directly.
+- **Output format:** JSON for structured results; raw text for content.
+  Structured tools (clone/fetch/pull/list/search/commit enumerations) return a
+  single JSON object: indented, UTF-8, always valid, with named fields and a
+  structured `truncated` metadata field (§5.5, §9.3). Content tools
+  (`read_file`) and diff tools (`show_commit`, `compare_commits`) return raw
+  text: JSON-escaping code or diffs would obscure the very thing the model
+  wants to read. Errors keep the stable `Error:` prefix contract (§9.3),
+  never JSON.
 - **Error handling:** a tool NEVER returns raw `stdout`/`stderr`. It captures
   both pipes (§5.6), interprets the result, and returns an agent-facing
   message. On success it returns the transformed output (sorted, capped,
@@ -553,7 +562,8 @@ Each phase is "done" only when all its criteria pass.
 - [ ] `read_file` reads a range; binary files are rejected cleanly.
 - [ ] `search_text` finds matches with line numbers and context.
 - [ ] All outputs respect the `max_results`/`max_lines`/`max_bytes` Valves and
-      include truncation markers.
+      expose explicit truncation (a `truncated` field in JSON tools, a trailing
+      marker in raw-text tools).
 - [ ] No path escapes the repo root.
 
 ### Phase 3
@@ -632,29 +642,28 @@ WebUI admin UI as its own Tool.
 
 ### 9.3 Output format examples
 
-Every tool returns a single string, parseable and markdown-friendly.
+Structured tools return a single JSON object (indented, UTF-8, always valid).
+Content/diff tools return raw text. Errors keep the prefix shape below.
 
-- `list_files`: one relative path per line, sorted. Marker on its own line when
-  truncated.
+- `clone_repo` / `pull_repo` / `fetch_repo`: a JSON object with named fields.
   ```
-  src/open_webui/app.py
-  src/open_webui/config.py
-  ... (truncated: showing 50 of 128)
+  {"repo": "open-webui/open-webui", "path": "/usr/local/src/open-webui/open-webui",
+   "default_branch": "main", "ref": "main", "status": "clean"}
   ```
-- `read_file`: raw file content (or the requested range), no added headers. If a
-  range is truncated, append the marker.
-- `search_text` / `search_symbol`: one match per line, `path:line: matched text`,
-  plus context lines indented, then the marker if truncated.
-  ```
-  src/open_webui/app.py:42: def create_app():
-  ```
-- `list_repos`: one line per clone, `owner/name  [branch]`.
-- `list_branches`: one line per branch, current marked with `*`, sorted; with
-  `remote=True` remote-tracking branches appear as `origin/<name>`.
-- `list_tags`: one line per tag, newest first.
-- `list_commits`: one commit per line (`hash subject`), capped.
+- `list_files`: `{"items": ["src/open_webui/app.py", ...], "truncated": {"shown": 50, "total": 128}}`.
+- `list_repos`: `{"items": [{"repo": "owner/name", "branch": "main"}, ...], "truncated": {...}}`.
+- `list_branches`: `{"items": [{"branch": "main", "current": true}, ...], "truncated": {...}}`.
+- `list_tags`: `{"items": ["v1.1.0", "v1.0.0", ...], "truncated": {...}}`.
+- `list_commits`: `{"items": [{"hash": "a1b2c3d", "subject": "..."}, ...], "truncated": {...}}`.
+- `search_text` / `search_symbol`: `{"items": [{"path": "...", "line": 42, "text": "..."}, ...], "truncated": {...}}`.
+- `read_file`: raw file content (or the requested range), no added headers; a
+  trailing marker when truncated.
 - `show_commit` / `compare_commits`: raw `git show` / `git diff` output (or the
-  `--stat` summary when `stat=True`), capped.
+  `--stat` summary when `stat=True`), with a trailing marker when truncated.
+
+Truncation must never break the JSON: if the serialized output exceeds
+`max_bytes`, the tool re-serializes compact and then drops trailing `items`
+until it fits, updating `truncated` (always valid JSON).
 
 Errors: return a plain string, never a raised exception. Use a stable,
 agent-readable shape:
@@ -830,6 +839,13 @@ Decisions made (recorded for the record):
   for "what changed between X and Y" this shows changes on `ref_b` since its
   divergence from `ref_a`. A two-dot (`..`) option may be added later if needed.
 - `clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
+- Structured tool results are returned as **JSON** (a single indented object,
+  UTF-8, always valid) so the agent gets named fields and structured truncation
+  metadata instead of ad-hoc text. Content/diff tools (`read_file`,
+  `show_commit`, `compare_commits`) keep raw text: JSON-escaping code and
+  diffs hurts readability. Errors keep the `Error:`/`Not found:`/`Timed out:`
+  prefix contract (stable, parseable, instantly recognizable) rather than
+  being JSON-encoded.
 - `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
   `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at

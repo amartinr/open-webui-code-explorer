@@ -77,6 +77,12 @@ actual write permission is still granted by the mounted volume.
 
 ## Tool conventions (Phase 1)
 
+- Successful results are returned as **JSON objects** (indented, UTF-8, always
+  valid): `clone_repo`, `fetch_repo`, `pull_repo`, and `list_repos` expose
+  named fields and a structured `truncated` field (e.g. `{"shown": 2,
+  "total": 5}`) instead of ad-hoc text markers. `read_file` and the diff
+  tools (`show_commit`, `compare_commits`, Phase 3) return raw text on
+  purpose: JSON-escaping code or diffs would obscure them.
 - Errors are returned as strings, never raised: `Error: <summary>` with an
   optional `cause:` line, `Not found:` for missing repos, `Timed out:` for
   timeouts.

@@ -1,5 +1,6 @@
 """Unit tests for common.py: the shared, security-critical helpers (§5.6)."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from common import (
     error_string,
     format_tool_error,
     git_args,
+    json_output,
     repo_component_ok,
     resolve_path,
     resolve_repo_root,
@@ -247,6 +249,46 @@ class TestTruncateOutput:
         out = truncate_output(text, 200, 100)
         assert len(out.encode("utf-8")) <= 100
         assert "byte cap" in out
+
+
+class TestJsonOutput:
+    def test_indented_by_default(self):
+        out = json_output({"repo": "o/r", "status": "clean"}, 20480)
+        assert "\n" in out  # indented, human-readable
+        assert json.loads(out) == {"repo": "o/r", "status": "clean"}
+
+    def test_never_invalid_json(self):
+        out = json_output({"items": [{"path": "x" * 500} for _ in range(50)]}, 500)
+        parsed = json.loads(out)  # must not raise
+        assert parsed["truncated"]["reason"] == "bytes"
+        assert parsed["truncated"]["shown"] <= parsed["truncated"]["total"]
+
+    def test_byte_cap_updates_truncated_and_drops_items(self):
+        data = {"items": [{"repo": f"owner/repo{i}", "branch": "main"} for i in range(50)]}
+        out = json_output(data, 800)
+        parsed = json.loads(out)
+        assert len(out.encode("utf-8")) <= 800
+        assert parsed["truncated"]["reason"] == "bytes"
+        assert parsed["truncated"]["total"] == 50
+        assert len(parsed["items"]) == parsed["truncated"]["shown"]
+
+    def test_compact_fallback_keeps_all_items_if_possible(self):
+        data = {"items": [{"repo": "o/r", "branch": "main"} for _ in range(50)]}
+        out = json_output(data, 4096)
+        parsed = json.loads(out)
+        assert len(parsed["items"]) == 50
+        assert "truncated" not in parsed
+
+    def test_preexisting_truncated_kept(self):
+        data = {"items": ["x" * 100 for _ in range(30)], "truncated": {"shown": 30, "total": 200}}
+        out = json_output(data, 20480)
+        parsed = json.loads(out)
+        assert parsed["truncated"] == {"shown": 30, "total": 200}
+
+    def test_utf8_preserved(self):
+        out = json_output({"repo": "café", "items": ["mañana"]}, 20480)
+        assert "café" in out
+        assert json.loads(out)["repo"] == "café"
 
 
 class TestTrimCause:

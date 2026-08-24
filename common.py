@@ -14,6 +14,7 @@ execution, and output capping. Do not re-implement any of this per tool.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -307,6 +308,35 @@ def _trim_bytes(text: str, budget: int) -> str:
     while text and len(text.encode("utf-8")) > budget:
         text = text[:-1]
     return text
+
+
+def json_output(data: dict, max_bytes: int) -> str:
+    """Serialize `data` as a single valid JSON object, byte-capped.
+
+    Structured tools return JSON (DESIGN.md §6, §9.3). The item cap
+    (max_results) is applied by the tool before calling; this helper enforces
+    the hard byte cap while keeping the JSON valid: it tries indented output
+    first, then compact, then drops trailing `items` entries (updating
+    `truncated` metadata) until it fits. The result is always valid JSON.
+    """
+    def _encode(indent: Optional[int]) -> str:
+        return json.dumps(data, ensure_ascii=False, indent=indent)
+
+    text = _encode(2)
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    compact = _encode(None)
+    if len(compact.encode("utf-8")) <= max_bytes:
+        return compact
+    items = data.get("items")
+    if isinstance(items, list) and items:
+        total = (data.get("truncated") or {}).get("total", len(items))
+        data["truncated"] = {"shown": len(items), "total": total, "reason": "bytes"}
+        while items and len(_encode(None).encode("utf-8")) > max_bytes:
+            items.pop()
+            data["truncated"]["shown"] = len(items)
+        return _encode(None)
+    return compact
 
 
 def trim_cause(text: str, limit: int = 300) -> str:

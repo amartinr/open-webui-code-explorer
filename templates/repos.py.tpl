@@ -106,12 +106,15 @@ class Tools:
 
         default_branch = await self._default_branch(str(root))
         status = await self._short_status(str(root))
-        return (
-            f"cloned: {repo}\n"
-            f"path: {root}\n"
-            f"default branch: {default_branch}\n"
-            f"ref: {resolved_ref or default_branch}\n"
-            f"status: {status}"
+        return json_output(
+            {
+                "repo": repo,
+                "path": str(root),
+                "default_branch": default_branch,
+                "ref": resolved_ref or default_branch,
+                "status": status,
+            },
+            self.valves.max_bytes,
         )
 
     async def _default_branch(self, root: str) -> str:
@@ -186,14 +189,19 @@ class Tools:
         added = sorted(set(after) - set(before))
         updated = sorted(r for r in before if r in after and before[r] != after[r])
         if not added and not updated:
-            return f"fetched: {repo}\nup to date: no new branches or tags"
-
-        lines = [f"fetched: {repo}", f"updated refs: {len(added) + len(updated)}"]
-        for r in added:
-            lines.append(f"  {r} (new)")
-        for r in updated:
-            lines.append(f"  {r} ({before[r][:7]}..{after[r][:7]})")
-        return truncate_output("\n".join(lines), self.valves.max_lines, self.valves.max_bytes)
+            return json_output(
+                {"repo": repo, "up_to_date": True, "items": []}, self.valves.max_bytes
+            )
+        items = [{"ref": r, "change": "new"} for r in added]
+        items += [
+            {"ref": r, "change": "updated", "from": before[r][:7], "to": after[r][:7]}
+            for r in updated
+        ]
+        data: dict = {"repo": repo, "up_to_date": False, "items": items}
+        if len(items) > self.valves.max_results:
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
+            data["items"] = items[: self.valves.max_results]
+        return json_output(data, self.valves.max_bytes)
 
     async def _list_refs(self, root: str) -> Dict[str, str]:
         res = await run_allowed(
@@ -250,11 +258,22 @@ class Tools:
             )
         out = (res.stdout + "\n" + res.stderr).strip()
         if "Already up to date" in out:
-            return f"pulled: {repo}\nAlready up to date."
+            return json_output({"repo": repo, "result": "up_to_date"}, self.valves.max_bytes)
         m = re.search(r"Updating\s+([0-9a-f]+)\.\.([0-9a-f]+)", out)
         if m:
-            return f"pulled: {repo}\nfast-forwarded: {m.group(1)[:7]}..{m.group(2)[:7]}"
-        return truncate_output(f"pulled: {repo}\n{out}", self.valves.max_lines, self.valves.max_bytes)
+            return json_output(
+                {
+                    "repo": repo,
+                    "result": "fast_forwarded",
+                    "from": m.group(1)[:7],
+                    "to": m.group(2)[:7],
+                },
+                self.valves.max_bytes,
+            )
+        return json_output(
+            {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes)},
+            self.valves.max_bytes,
+        )
 
     # ------------------------------------------------------------------
     # list_repos
@@ -266,7 +285,7 @@ class Tools:
         Use to see what is already cloned (owner/name and current branch)
         before deciding whether to clone, fetch, or pull. No parameters.
 
-        :return: one `owner/name  [branch]` per line, sorted.
+        :return: a JSON object with an `items` array of {"repo", "branch"} entries, sorted.
         """
         try:
             return await self._list_repos()
@@ -279,20 +298,26 @@ class Tools:
             raise ToolError(
                 f"no repositories under {repos_path} (nothing cloned yet)", kind="not_found"
             )
-        entries: List[str] = []
+        entries: List[Dict[str, str]] = []
         for owner_dir in sorted(repos_path.iterdir()):
             if not owner_dir.is_dir() or owner_dir.name.startswith("."):
                 continue
             for repo_dir in sorted(owner_dir.iterdir()):
                 if not repo_dir.is_dir() or not (repo_dir / ".git").exists():
                     continue
-                entries.append(f"{owner_dir.name}/{repo_dir.name}  [{await self._current_branch(str(repo_dir))}]")
+                entries.append(
+                    {
+                        "repo": f"{owner_dir.name}/{repo_dir.name}",
+                        "branch": await self._current_branch(str(repo_dir)),
+                    }
+                )
         if not entries:
             raise ToolError(f"no repositories under {repos_path} (nothing cloned yet)", kind="not_found")
-        capped = "\n".join(entries[: self.valves.max_results])
+        data: dict = {"items": entries}
         if len(entries) > self.valves.max_results:
-            capped += "\n" + TRUNCATION_MARKER.format(shown=self.valves.max_results, total=len(entries))
-        return truncate_output(capped, self.valves.max_lines, self.valves.max_bytes)
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(entries)}
+            data["items"] = entries[: self.valves.max_results]
+        return json_output(data, self.valves.max_bytes)
 
     async def _current_branch(self, root: str) -> str:
         res = await run_allowed(git_args("-C", root, "symbolic-ref", "--short", "-q", "HEAD"), TIMEOUT_SEARCH)
