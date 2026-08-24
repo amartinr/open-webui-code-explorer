@@ -132,8 +132,11 @@ Repositories are stored under a configurable base path using the
 
 ### 5.4 Deployment: three tool scripts, three `Valves` classes
 
-The project is deployed to Open WebUI as **three tool scripts**, each exposing
-multiple tools via `as_tools()`. The grouping is by object, not by phase:
+The project is deployed to Open WebUI as **three tool scripts** (one per Tool
+in the admin UI), each exposing multiple tools. Open WebUI auto-discovers a
+tool's functions from the public methods of its `Tools` class (§9.6); there is
+no `as_tools()` in the current Open WebUI API. The grouping is by object, not
+by phase:
 
 | Script | Tools exposed | Phase(s) |
 |---|---|---|
@@ -182,9 +185,14 @@ can refine its query instead of assuming it saw everything.
 
 ### 5.6 Shared helper contract
 
-All three scripts import a common helper module (`common.py`) that centralizes
-the security-critical logic. The following MUST be the single implementation for
-every tool (no per-tool reimplementation).
+`common.py` is the **single source of truth** for the security-critical logic.
+Because Open WebUI loads each tool as a self-contained script (stored in the DB
+and `exec`'d in an isolated namespace, §9.1), the three scripts cannot `import
+common` at runtime. Instead, a **build script inlines the body of `common.py`
+into each of the three scripts** (§9.2). The following MUST be the single
+implementation for every tool (no per-tool reimplementation) and MUST be safe to
+inline: stdlib imports only, no relative imports, no module-level side effects,
+no `if __name__ == "__main__"` guard.
 
 ```python
 def resolve_repos_path(valve_path: str) -> str
@@ -202,8 +210,10 @@ def resolve_path(repo: str, path: str | None, repos_path: str) -> Path
 # any segment is ".."; or the resolved path, after .resolve(), escapes the repo
 # root (symlink escape). None → repo root.
 
-def run_allowed(argv: list[str], timeout: int) -> subprocess.CompletedProcess
-# subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout).
+async def run_allowed(argv: list[str], timeout: int) -> subprocess.CompletedProcess
+# await asyncio.to_thread(subprocess.run, argv, shell=False, capture_output=True,
+#   text=True, timeout=timeout). Offload to a worker thread so the blocking call
+#   does not stall Open WebUI's event loop (backend is fully async since 0.9.0).
 # argv[0] MUST be one of the allow-listed binaries {"git", "rg", "fd"}.
 ```
 
@@ -518,11 +528,21 @@ Each phase is "done" only when all its criteria pass.
 
 ### 9.1 References & environment
 
-- **Tool API reference:** `docs.openwebui.com` → Tools and Valves sections
-  (current URL: `https://docs.openwebui.com/features/tools/`). Follow it for the
-  `Tools` class, `Valves` (Pydantic), and `as_tools()`.
-- **Working examples:** `open-webui/open-webui` repo → `backend/open_webui/tools/`
-  (built-in tools), and the `open-webui/tools` community repo.
+- **Tool API reference** (docs.openwebui.com):
+  - `https://docs.openwebui.com/features/extensibility/plugin/tools`
+  - `https://docs.openwebui.com/features/extensibility/plugin/tools/development`
+  - `https://docs.openwebui.com/features/extensibility/plugin/development/valves`
+- **How tools are loaded (source of truth):** `backend/open_webui/utils/plugin.py`
+  (`load_tool_module_by_id`) and `backend/open_webui/utils/tools.py`
+  (`get_tool_specs`, `get_functions_from_tool`). A tool is stored in the DB as a
+  single Python source string, `exec`'d into an isolated `types.ModuleType`, and
+  its functions are auto-discovered from the public methods of a class named
+  `Tools`. There is **no `as_tools()`** and **no filesystem tools directory** for
+  user tools in the current API.
+- **Built-in tool examples:** `backend/open_webui/tools/builtin.py` (plain
+  functions, not a `Tools` class) and the community site `openwebui.com` for
+  importable user tools. Note: the `open-webui/tools` GitHub repo referenced in
+  earlier drafts does not exist.
 - **Required binaries** (must be in `PATH`): `git`, `rg` (ripgrep), `fd`.
   Each script SHOULD check for them at startup and log a clear error if missing.
   All subprocess calls use the resolved absolute path of the binary.
@@ -532,18 +552,33 @@ Each phase is "done" only when all its criteria pass.
 ```
 open-webui-code-explorer/
   common.py              # shared helpers (§5.6), ToolError, allow-list, caps
-  tools_repos.py         # script "Repos": clone_repo, fetch_repo, pull_repo, list_repos
-  tools_files_search.py  # script "Files & Search": list_files, read_file, search_text, search_symbol
-  tools_commits.py       # script "Commits": list_commits, show_commit, compare_commits
+  build.py               # inlines common.py into each template → dist/
+  templates/
+    repos.py.tpl         # script "Repos": clone_repo, fetch_repo, pull_repo, list_repos
+    files_search.py.tpl  # script "Files & Search": list_files, read_file, search_text, search_symbol
+    commits.py.tpl       # script "Commits": list_commits, show_commit, compare_commits
+  dist/                  # GENERATED, self-contained scripts (paste into admin UI)
+    repos.py
+    files_search.py
+    commits.py
   tests/
     test_common.py       # path sanitization, repo validation, caps
     test_tools_*.py
-  README.md              # deploy/configure instructions
+  README.md              # build + deploy/configure instructions
 ```
 
-The three `tools_*.py` scripts import from `common.py`. Each is uploaded to Open
-WebUI as its own Tool (paste via admin UI "Add Tool", or drop into the tools
-directory and restart).
+**Build model.** `common.py` is the single source of truth; the three scripts
+are generated. Each `templates/*.py.tpl` is a full tool script containing
+a marker line (e.g. `# {{COMMON_CODE}}`); `build.py` replaces that marker with
+the verbatim body of `common.py` and writes the result to `dist/`. The `dist/`
+files are self-contained (no `import common`), so each is pasted into the Open
+WebUI admin UI as its own Tool.
+
+- `common.py` must be inline-safe (§5.6).
+- The frontmatter docstring (`title`/`description`/`required_open_webui_version`)
+  is per-template, not in `common.py`, so each generated script keeps its own
+  metadata (§9.6).
+- `dist/` is a build artifact; commit or gitignore it per project preference.
 
 ### 9.3 Output format examples
 
@@ -587,13 +622,79 @@ they may be exposed later as admin Valves if needed.
 
 ### 9.5 Deployment (per script)
 
-1. Implement and unit-test `common.py` and a script locally.
-2. In Open WebUI admin → Tools, add a new tool; paste the script (or place the
-   file in the Open WebUI tools directory and restart).
-3. In the tool's Valves, confirm the defaults (§5.5); set `repos_path` only if
+1. Edit `common.py` and/or the templates; run `python build.py` to regenerate
+   `dist/`.
+2. Unit-test `common.py` and the generated scripts locally.
+3. In Open WebUI admin → Tools, add a new tool; paste the corresponding
+   `dist/*.py` content. (No filesystem tools directory exists for user
+   tools; the source lives in the DB.)
+4. In the tool's Valves, confirm the defaults (§5.5); set `repos_path` only if
    you are NOT using `OWUI_REPOS_PATH`.
-4. In a model config, attach the desired tool script(s).
-5. Test against a small public repo before wiring the meta model.
+5. In a model config, attach the desired tool script(s).
+6. Test against a small public repo before wiring the meta model.
+
+### 9.6 Tool script skeleton (canonical, per current Open WebUI API)
+
+Each generated script follows this shape. The `# {{COMMON_CODE}}` marker is
+replaced by `build.py` with the inlined `common.py` body.
+
+```python
+"""
+title: Code Explorer — Repos
+description: Clone, fetch, pull, and list code repositories for the meta model.
+required_open_webui_version: 0.9.6
+"""
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+# {{COMMON_CODE}}
+# (build.py inlines common.py here; no `import common` at runtime.)
+
+
+class Tools:
+    def __init__(self):
+        self.valves = self.Valves()
+
+    class Valves(BaseModel):
+        repos_path: str = Field("", description="Base directory for clones (§5.2).")
+        max_results: int = Field(50, description="Cap on item counts.")
+        max_lines: int = Field(200, description="Cap on output lines.")
+        max_bytes: int = Field(20480, description="Hard byte cap on output.")
+
+    async def clone_repo(self, repo: str, ref: Optional[str] = None) -> str:
+        """
+        Clone a repository into the storage area.
+
+        :param repo: "<owner>/<name>" of the repository to clone.
+        :param ref: Optional branch, tag, or "release".
+        """
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
+        ...
+        return "cloned: ..."
+```
+
+Key points (confirmed against current Open WebUI source):
+
+- **One file, one `Tools` class, one `Valves` class.** Open WebUI auto-discovers
+  every public (non-`_`) method of `Tools` as a tool: the tool's *name* is the
+  method name, its *description* is the method docstring, and its *parameter
+  schema* is derived from type hints + docstring `:param` entries.
+- **Methods must be `async def`.** The backend is fully async since 0.9.0;
+  blocking calls (subprocess) must be offloaded via `asyncio.to_thread` (§5.6).
+- **Return the result as a string.** The tool's return value is what the model
+  sees. Errors are returned as `Error: ...` strings, never raised.
+- **`Valves` is a nested `BaseModel`** instantiated in `__init__` as
+  `self.valves = self.Valves()`; Open WebUI overwrites it with admin values at
+  load time. `UserValves` (optional) is exposed as `__user__["valves"]`.
+- **Docstring conventions:** a top-level frontmatter docstring (`title:`,
+  `description:`, `required_open_webui_version:`, optional `requirements:`) plus
+  `:param name: description` lines. Do not rely on `self.citation` (deprecated;
+  it is read but nothing acts on it).
+- **Injected params are optional.** `__user__`, `__request__`, `__event_emitter__`,
+  `__event_call__`, `__metadata__`, `__messages__`, `__files__`, `__model__`,
+  `__oauth_token__` are injected only if declared in the signature. These tools
+  are read-only and self-contained, so they typically need none of them.
 
 ---
 
