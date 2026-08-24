@@ -27,11 +27,12 @@ This is distinct from the documentation side, which is handled separately
 
 ### Goals
 
-- Let the meta model **clone, fetch, list, search, explore, read, and compare**
-  code repositories through tools, never through its own shell or network.
+- Let the meta model **clone, fetch, pull, list, search, explore, read, and
+  compare** code repositories through tools, never through its own shell or
+  network.
 - Keep every tool **read-only** with respect to source code, except for the
-  `clone_repo` and `fetch_repo` tools, which may only write inside a
-  dedicated, allow-listed repository directory.
+  `clone_repo`, `fetch_repo`, and `pull_repo` tools, which may only write
+  inside a dedicated, allow-listed repository directory.
 - Provide a **secure-by-default** surface: path sanitization, output size
   limits, allow-listed subprocesses, no arbitrary command execution.
 - Make the repository storage location **configurable** at two levels:
@@ -83,8 +84,8 @@ These rules are non-negotiable and MUST be enforced by every tool.
    strings. Each tool invokes a fixed set of binaries (`git`, `rg`, `fd`) using
    argument arrays (no `shell=True`).
 2. **Read-only for code.** No tool may create, modify, or delete files inside
-   repositories. Exception: the `clone_repo` and `fetch_repo` tools may
-   write *only* into `<repos_path>`, and only via `git`.
+   repositories. Exception: the `clone_repo`, `fetch_repo`, and `pull_repo`
+   tools may write *only* into `<repos_path>`, and only via `git`.
 3. **Path sanitization.** Every `repo` and `path` parameter MUST be validated
    against path traversal (`..`, absolute paths, symlink escapes) and resolved
    strictly inside the repository root. Reject anything that escapes.
@@ -92,8 +93,8 @@ These rules are non-negotiable and MUST be enforced by every tool.
    limits (admin Valves, §5.5), truncating with an explicit "truncated" marker so
    the model knows results are incomplete.
 5. **No network from the model.** The model cannot reach the network. Only the
-   `clone_repo` and `fetch_repo` tools may talk to remotes, and only through
-   `git` (clone/fetch).
+   `clone_repo`, `fetch_repo`, and `pull_repo` tools may talk to remotes, and
+   only through `git` (clone/fetch/pull).
 6. **No execution of code.** Nothing is run, imported, or evaluated. Tools only
    read bytes and run Git/ripgrep/fd.
 
@@ -136,7 +137,7 @@ multiple tools via `as_tools()`. The grouping is by object, not by phase:
 
 | Script | Tools exposed | Phase(s) |
 |---|---|---|
-| **Repos** | `clone_repo`, `fetch_repo`, `list_repos` | Phase 1 |
+| **Repos** | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | Phase 1 |
 | **Files & Search** | `list_files`, `read_file`, `search_text`, `search_symbol` | Phase 2 + `search_symbol` in Phase 3 |
 | **Commits** | `list_commits`, `show_commit`, `compare_commits` | Phase 3 |
 
@@ -249,7 +250,7 @@ All tools share these conventions. Implement them consistently.
 Implementation is split into phases with clear dependencies. Each phase MUST be
 validated (see §8) before moving to the next.
 
-### Phase 1 — Foundation: `clone_repo`, `fetch_repo`, `list_repos`
+### Phase 1 — Foundation: `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos`
 
 > Goal: establish the storage layer and enable bringing code into the system.
 > These are the only tools that write to disk (inside the allow-listed repo dir).
@@ -266,7 +267,7 @@ clone_repo(
 
 - Resolve target `<repos_path>/<owner>/<name>`.
 - If it already exists, return an error/notice telling the model to use
-  `fetch_repo` or `list_repos` (no destructive overwrite).
+  `fetch_repo`, `pull_repo`, or `list_repos` (no destructive overwrite).
 - Run `git clone` (full clone; no shallow option).
 - After clone, if `ref` is given, checkout that ref.
 - `ref="release"` is a special value resolving to the most recent **release tag**:
@@ -286,6 +287,26 @@ fetch_repo(
 - Requires the repo to already exist.
 - Run `git fetch --all --tags --prune`.
 - Return list of updated branches/tags, or a notice if up to date.
+- Does NOT touch the working tree. This is the only way to bring in newly
+  published tags while the checkout is on a detached HEAD (e.g. cloned at a
+  specific tag) or on a branch you do not want to move.
+
+#### `pull_repo`
+
+```
+pull_repo(
+  repo:  str      # required: "<owner>/<name>"
+)
+```
+
+- Requires the repo to already exist and the checkout to be on a branch
+  (fails with a clear message if on a detached HEAD — use `fetch_repo` there).
+- Run `git pull --ff-only`.
+- `--ff-only` ensures the working tree only advances via fast-forward: it never
+  creates merge commits and never leaves the repo in a conflicted state. If the
+  local branch diverged, it fails and reports the situation instead of merging.
+- Implicitly performs a fetch, so it also brings in new tags. It is the tool to
+  use for keeping a moving branch (e.g. `dev`) up to date.
 
 #### `list_repos`
 
@@ -299,7 +320,8 @@ list_repos()
 
 #### Phase 1 safety notes
 
-- Only `clone_repo` / `fetch_repo` write; both restrict writes to `<repos_path>`.
+- Only `clone_repo` / `fetch_repo` / `pull_repo` write; all restrict writes to
+  `<repos_path>`.
 - `repo` is validated via the shared helper `resolve_repo_root` (§5.6). The
   format is `<owner>/<name>`, each component matching
   `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` and neither component equal to `.` or `..`.
@@ -459,7 +481,10 @@ Each phase is "done" only when all its criteria pass.
 
 - [ ] `clone_repo` clones a public repo into `<repos_path>/<owner>/<name>`.
 - [ ] `clone_repo` on an existing repo fails gracefully (no overwrite).
-- [ ] `fetch_repo` updates branches/tags and reports changes.
+- [ ] `fetch_repo` updates branches/tags and reports changes, without touching
+      the working tree.
+- [ ] `pull_repo` fast-forwards the working tree on a branch; it fails cleanly
+      on a detached HEAD and never creates a merge commit.
 - [ ] `list_repos` shows all clones with their owner/repo.
 - [ ] Path traversal and malformed `repo` values are rejected.
 - [ ] Env var `OWUI_REPOS_PATH` and Valve `repos_path` both affect location,
@@ -507,7 +532,7 @@ Each phase is "done" only when all its criteria pass.
 ```
 open-webui-code-explorer/
   common.py              # shared helpers (§5.6), ToolError, allow-list, caps
-  tools_repos.py         # script "Repos": clone_repo, fetch_repo, list_repos
+  tools_repos.py         # script "Repos": clone_repo, fetch_repo, pull_repo, list_repos
   tools_files_search.py  # script "Files & Search": list_files, read_file, search_text, search_symbol
   tools_commits.py       # script "Commits": list_commits, show_commit, compare_commits
   tests/
@@ -552,6 +577,7 @@ out:`), never a raised exception.
 |---|---|
 | `clone_repo` | 600 s |
 | `fetch_repo` | 120 s |
+| `pull_repo` | 120 s |
 | `list_files`, `search_text`, `search_symbol` | 30 s |
 | `read_file` | 10 s |
 | `list_commits`, `show_commit`, `compare_commits` | 30 s |
