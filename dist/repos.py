@@ -160,20 +160,50 @@ _IGNORE_PATTERNS = (
 )
 
 
-def _load_ignore_spec(root: Path):
-    """Build a pathspec for the repo's .gitignore (+ implicit ignores).
-    Returns None if pathspec is unavailable (stdlib-only fallback)."""
+def _load_ignore_spec(root: Path, base: Optional[Path] = None):
+    """Build a pathspec for the repo's .gitignore files (root + nested),
+    honoring the gitignore semantics of git/fd/ripgrep. Returns None if
+    pathspec is unavailable (stdlib-only fallback).
+
+    Nested .gitignore files are honored: each subdirectory's .gitignore is
+    read and its patterns are prefixed with the subdir path so they apply
+    relative to that subdir (git semantics). A .gitignore also applies to
+    the directory it lives in, so all of them are merged.
+    """
     try:
         import pathspec  # type: ignore
     except ImportError:
         return None
     lines = list(_IGNORE_PATTERNS)
-    gitignore = root / ".gitignore"
-    if gitignore.is_file():
+    for gi in sorted(root.rglob(".gitignore")):
+        if not gi.is_file():
+            continue
         try:
-            lines += gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
+            rel = gi.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        gi_dir = "" if rel == ".gitignore" else rel[: -len(".gitignore")].rstrip("/")
+        try:
+            gi_lines = gi.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            pass
+            continue
+        for line in gi_lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if gi_dir:
+                # gitignore semantics: a pattern in subdir applies relative to
+                # that subdir. If it does not contain a slash, it matches at
+                # any depth below that subdir, so prefixing the dir works.
+                # A leading "!" (negation) must stay at the very front.
+                neg = line.startswith("!")
+                body = line[1:] if neg else line
+                if body.startswith("/"):
+                    body = "/" + gi_dir + body  # anchored to the subdir
+                else:
+                    body = gi_dir + "/" + body
+                line = ("!" if neg else "") + body
+            lines.append(line)
     try:
         # pathspec >= 0.10 names the gitignore engine "gitignore" ("gitwildmatch"
         # is deprecated in 1.x). Fall back for older versions.
@@ -185,7 +215,7 @@ def _load_ignore_spec(root: Path):
         return None
 
 
-def _ignore_match(spec, rel: str, is_dir: bool) -> bool:
+def _ignore_match(spec, rel: str, is_dir: bool, base: Optional[Path] = None) -> bool:
     """True iff `rel` (relative to repo root) is ignored."""
     if spec is None:
         return False

@@ -173,6 +173,36 @@ class TestListFiles:
         assert len(result["items"]) == 2
         assert result["truncated"]["total"] >= 2
 
+    async def test_nested_gitignore_honored(self, repos_path, source_repo):
+        """A .gitignore in a subdirectory applies relative to that subdir,
+        like git/fd/ripgrep (DESIGN.md §7 Phase 2)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "sub" / ".gitignore").write_text("*.gen\n")
+        (clone / "sub" / "a.gen").write_text("sentinel_xyz\n")
+
+        result = parse_json(await tools.list_files("testowner/testrepo"))
+        paths = [i["path"] for i in result["items"]]
+        assert "sub/a.gen" not in paths
+        assert "sub/deep.py" in paths
+
+        # search_text must also skip ignored files.
+        result = parse_json(await tools.search_text("testowner/testrepo", "sentinel_xyz"))
+        assert result["items"] == []
+
+    async def test_nested_gitignore_negation(self, repos_path, source_repo):
+        """Negation in a nested .gitignore (git semantics)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "sub" / ".gitignore").write_text("*.gen\n!keep.gen\n")
+        (clone / "sub" / "a.gen").write_text("gen\n")
+        (clone / "sub" / "keep.gen").write_text("keep\n")
+
+        result = parse_json(await tools.list_files("testowner/testrepo"))
+        paths = [i["path"] for i in result["items"]]
+        assert "sub/a.gen" not in paths
+        assert "sub/keep.gen" in paths
+
     async def test_repo_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
         out = await tools.list_files("o/r")

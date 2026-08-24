@@ -23,9 +23,10 @@ is no `import common` at runtime.
 - Python 3.10+ (build + tests).
 - `git` (>= 2.39) on `PATH` (checked at tool load time, error surfaced at
   call time). **`fd` and `rg` are NOT required**: listing, reading, and
-  searching are pure-Python, using `pathspec` (for `.gitignore`) and `regex`
-  (for searches) when those packages are present, and falling back to the
-  standard library otherwise.
+  searching are pure-Python, using `pathspec` (for `.gitignore`, including
+  nested `.gitignore` files with git semantics) and `regex` (for searches)
+  when those packages are present, and falling back to the standard library
+  otherwise.
 
 ## Build
 
