@@ -1,8 +1,8 @@
 # Open WebUI Code Explorer
 
 A set of **Open WebUI Tools** that give a "meta model" (an LLM configured
-inside Open WebUI) first-class, read-only access to source code — of Open
-WebUI itself and of community tool repositories — for understanding,
+inside Open WebUI) first-class, read-only access to source code (of Open
+WebUI itself and of community tool repositories) for understanding,
 inspecting, and comparing code. See [`DESIGN.md`](DESIGN.md) for the full
 design, security model, and acceptance criteria.
 
@@ -23,7 +23,7 @@ model (usage rules + presentation guidance), as designed in Phase 4.
 
 ## Requirements
 
-- Python 3.10+ (build + tests).
+- Python 3.9+ (build + tests; `asyncio.to_thread` requires 3.9).
 - `git` (>= 2.39) on `PATH` (checked at tool load time, error surfaced at
   call time). **`fd` and `rg` are NOT required**: listing, reading, and
   searching are pure-Python, using `pathspec` (for `.gitignore`, including
@@ -44,9 +44,10 @@ Open WebUI without running the build.
 ## Deploy (Open WebUI admin)
 
 1. Run `python build.py` (or use the committed `dist/`).
-2. **Admin → Tools → +** and paste the contents of `dist/repos.py`.
+2. **Admin → Tools → +** and paste the contents of `dist/repos.py`,
+   `dist/files_search.py`, and `dist/commits.py` (one tool per script).
 3. In the tool's **Valves**, confirm the defaults:
-   - `repos_path` — leave empty unless you are not using `OWUI_REPOS_PATH`.
+   - `repos_path` - leave empty unless you are not using `OWUI_REPOS_PATH`.
    - `max_results` (50), `max_lines` (200), `max_bytes` (20480).
 4. **Admin → Models → <model> → Tools**: attach the script(s) you want.
 5. Test against a small public repo before wiring the meta model.
@@ -64,7 +65,7 @@ OWUI_REPOS_PATH=/usr/local/src
 ```
 
 A volume is required so clones survive container recreation; the process needs
-read/write permission on it. The `repos_path` Valve is a *logical* override —
+read/write permission on it. The `repos_path` Valve is a *logical* override:
 actual write permission is still granted by the mounted volume.
 
 ## Security model (summary)
@@ -83,14 +84,15 @@ actual write permission is still granted by the mounted volume.
   `max_lines` / `max_bytes` Valves with an explicit truncation marker.
 - **No shell, no code execution, no network from the model.**
 
-## Tool conventions (Phase 1)
+## Tool conventions
 
 - Successful results are returned as **JSON objects** (indented, UTF-8, always
-  valid): `clone_repo`, `fetch_repo`, `pull_repo`, and `list_repos` expose
-  named fields and a structured `truncated` field (e.g. `{"shown": 2,
-  "total": 5}`) instead of ad-hoc text markers. `read_file` and the diff
-  tools (`show_commit`, `compare_commits`, Phase 3) return raw text on
-  purpose: JSON-escaping code or diffs would obscure them.
+  valid): `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos`,
+  `list_files`, `search_text`, `search_symbol`, `list_branches`, `list_tags`,
+  and `list_commits` expose named fields and a structured `truncated` field
+  (e.g. `{"shown": 2, "total": 5}`) instead of ad-hoc text markers.
+  `read_file` and the diff tools (`show_commit`, `compare_commits`) return
+  raw text on purpose: JSON-escaping code or diffs would obscure them.
 - Errors are returned as strings, never raised: `Error: <summary>` with an
   optional `cause:` line, `Not found:` for missing repos, `Timed out:` for
   timeouts.
