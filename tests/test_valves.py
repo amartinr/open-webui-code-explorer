@@ -30,6 +30,7 @@ REQUIRED_VALVES = {
 # Which scripts exist and what max_results is capped on (per-script wording,
 # allowed to differ; the field itself must still be identical).
 SCRIPTS = [
+    "code_explorer.py",
     "commits.py",
     "files_search.py",
     "repos.py",
@@ -121,3 +122,43 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path):
     result = json.loads(out)
     assert len(result["items"]) == 1
     assert result["truncated"] == {"shown": 1, "total": 2}
+
+
+def test_combined_script_loads_and_discovers_all_tools():
+    """dist/code_explorer.py is the single-script build artifact: it must load
+    via exec like Open WebUI does and expose ALL tools (no duplicates), one
+    Valves class, and no missing/extra members (DESIGN.md §5.4, §9.2)."""
+    import inspect
+
+    module = load_script("code_explorer.py")
+    tools = module.Tools()
+    discovered = sorted(
+        func
+        for func in dir(tools)
+        if callable(getattr(tools, func))
+        and not func.startswith("_")  # noqa: SIM102
+        and not inspect.isclass(getattr(tools, func))
+    )
+    assert discovered == [
+        "clone_repo",
+        "compare_commits",
+        "fetch_repo",
+        "list_branches",
+        "list_commits",
+        "list_files",
+        "list_repos",
+        "list_tags",
+        "pull_repo",
+        "read_file",
+        "search_symbol",
+        "search_text",
+        "show_commit",
+    ]
+    for name in discovered:
+        assert getattr(tools, name).__doc__
+    # One Valves class only; contract enforced by the parametrized test.
+    assert isinstance(tools.valves, module.Tools.Valves)
+    # Self-contained: no import common, no leftover marker.
+    source = (DIST / "code_explorer.py").read_text(encoding="utf-8")
+    assert "import common" not in source
+    assert "{{COMMON_CODE}}" not in source

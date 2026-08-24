@@ -635,18 +635,29 @@ open-webui-code-explorer/
     repos.py
     files_search.py
     commits.py
+    code_explorer.py     # OPTIONAL single-script: all 13 tools, one Tools + one Valves
   tests/
     test_common.py       # path sanitization, repo validation, caps
     test_tools_*.py
   README.md              # build + deploy/configure instructions
 ```
 
-**Build model.** `common.py` is the single source of truth; the three scripts
-are generated. Each `templates/*.py.tpl` is a full tool script containing
+**Build model.** `common.py` is the single source of truth; the scripts are
+generated. Each `templates/*.py.tpl` is a full tool script containing
 a marker line (e.g. `# {{COMMON_CODE}}`); `build.py` replaces that marker with
 the verbatim body of `common.py` and writes the result to `dist/`. The `dist/`
 files are self-contained (no `import common`), so each is pasted into the Open
 WebUI admin UI as its own Tool.
+
+`build.py` ALSO generates `dist/code_explorer.py`: a single combined script
+that exposes ALL tools in one `Tools` class with one `Valves` class, for
+operators who prefer pasting one script. The methods are extracted from the
+three templates' `Tools` classes via AST (no source duplication); the only
+duplicated helper (`_ensure_repo_exists`, identical in all three) is
+deduplicated by name. Trade-off (recorded in §10): the combined script gives
+every capability at once (including the repo-management write tools), so the
+per-group tool access of §5.4 is lost; keep the three per-group scripts when
+that granularity matters.
 
 - `common.py` must be inline-safe (§5.6).
 - The frontmatter docstring (`title`/`description`/`required_open_webui_version`)
@@ -942,6 +953,15 @@ Decisions made (recorded for the record):
   earlier terse `:param path:` wording invited. The wording is kept on a
   single line per `:param` (Open WebUI parses line-by-line) and a regression
   test guards the warning + examples.
+- `build.py` additionally generates `dist/code_explorer.py`, a single-script
+  artifact with all 13 tools in one `Tools` class and one `Valves` class.
+  Methods are extracted from the three templates via AST (no source
+  duplication); `_ensure_repo_exists` (identical in all three) is
+  deduplicated by name. It is an OPTION, never a replacement: the three
+  per-group scripts remain the default because §5.4's per-group tool access
+  is a security property (a model attached only to Files & Search cannot
+  clone/write). The combined script is for operators who accept giving every
+  capability in exchange for a one-paste deploy.
 - After a `git clone`, only the default branch exists locally; other branches
   are `origin/<name>` until fetched/checked out (relevant for `list_branches`
   and the meta model's expectations).

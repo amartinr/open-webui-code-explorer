@@ -13,6 +13,14 @@ design, security model, and acceptance criteria.
 | **Repos** (`dist/repos.py`) | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | 1 (implemented) |
 | **Files & Search** (`dist/files_search.py`) | `list_files`, `read_file`, `search_text`, `search_symbol` | 2/3 (implemented) |
 | **Commits** (`dist/commits.py`) | `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | 3 (implemented) |
+| **All** (`dist/code_explorer.py`) | all 13 tools in one script | 1-3 (implemented) |
+
+`dist/code_explorer.py` is a single-script alternative that exposes all 13
+tools in one `Tools` class with one `Valves` class: simpler to deploy (paste
+one script), but it gives every capability at once (including the
+repo-management write tools), so per-group tool access is lost. Prefer the
+three per-group scripts when you want to attach only read/search tools to a
+model (DESIGN.md §5.4).
 
 Each script is self-contained: `common.py` (the single source of truth for the
 security-critical logic) is inlined into every script at build time, so there
@@ -45,7 +53,8 @@ Open WebUI without running the build.
 
 1. Run `python build.py` (or use the committed `dist/`).
 2. **Admin → Tools → +** and paste the contents of `dist/repos.py`,
-   `dist/files_search.py`, and `dist/commits.py` (one tool per script).
+   `dist/files_search.py`, and `dist/commits.py` (one tool per script), OR
+   paste just `dist/code_explorer.py` for a single combined tool.
 3. In the tool's **Valves**, confirm the defaults:
    - `repos_path` - leave empty unless you are not using `OWUI_REPOS_PATH`.
    - `max_results` (50), `max_lines` (200), `max_bytes` (20480).
