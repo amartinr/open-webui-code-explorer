@@ -43,7 +43,7 @@ TIMEOUT_READ = 10
 TIMEOUT_SEARCH = 30
 TIMEOUT_COMMIT = 30
 
-# read_file safety limits: files larger than MAX_READ_BYTES are rejected;
+# cexp_read_file safety limits: files larger than MAX_READ_BYTES are rejected;
 # ranges larger than MAX_INLINE_LINES are streamed (only the shown lines are
 # read) instead of being read fully into memory.
 MAX_READ_BYTES = 50 * 1024 * 1024
@@ -339,7 +339,7 @@ def _line_is_binary(line: str) -> bool:
 
 
 def _is_binary_path(p: Path) -> bool:
-    """Binary check on a path, used by search_text (scans many files)."""
+    """Binary check on a path, used by cexp_search_text (scans many files)."""
     return _is_binary(_read_binary_sample(p))
 
 
@@ -550,7 +550,7 @@ def parse_filter(filter_str: Optional[str]) -> tuple:
 def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     """True iff `relpath` matches the include/exclude glob sets.
 
-    Used for the single-file case of list_files (fd-style semantics: globs are
+    Used for the single-file case of cexp_list_files (fd-style semantics: globs are
     matched against the full relative path).
     """
     if excludes and any(fnmatch.fnmatch(relpath, g) for g in excludes):

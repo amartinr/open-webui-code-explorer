@@ -32,10 +32,10 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # list_files
+    # cexp_list_files
     # ------------------------------------------------------------------
 
-    async def list_files(
+    async def cexp_list_files(
         self,
         repo: str,
         path: Optional[str] = None,
@@ -108,10 +108,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # read_file
+    # cexp_read_file
     # ------------------------------------------------------------------
 
-    async def read_file(
+    async def cexp_read_file(
         self,
         repo: str,
         path: str,
@@ -120,7 +120,7 @@ class Tools:
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
-        Use to inspect file contents. Example: read_file("owner/repo",
+        Use to inspect file contents. Example: cexp_read_file("owner/repo",
         "src/main.py"). Accepts an optional 1-based start/end line range.
         Returns raw text (no line numbers, no headers); a trailing marker is
         appended when output is truncated. Binary and non-UTF-8 files are
@@ -205,10 +205,10 @@ class Tools:
         return result
 
     # ------------------------------------------------------------------
-    # search_text
+    # cexp_search_text
     # ------------------------------------------------------------------
 
-    async def search_text(
+    async def cexp_search_text(
         self,
         repo: str,
         query: str,
@@ -270,10 +270,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # search_symbol
+    # cexp_search_symbol
     # ------------------------------------------------------------------
 
-    async def search_symbol(
+    async def cexp_search_symbol(
         self,
         repo: str,
         query: str,
@@ -357,7 +357,7 @@ class Tools:
 
     def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
         """Yield (rel_path, Path) for every text file under `base` that passes
-        the .gitignore and filter globs. Shared by search_text/search_symbol."""
+        the .gitignore and filter globs. Shared by cexp_search_text/cexp_search_symbol."""
         spec = _load_ignore_spec(root)
         if base.is_file():
             rel_f = _try_decode_rel(base, root)
@@ -402,6 +402,6 @@ class Tools:
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
             raise ToolError(
-                f"repository not cloned yet: {repo} (use clone_repo first)",
+                f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
             )

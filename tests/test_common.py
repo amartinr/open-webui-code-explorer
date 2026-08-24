@@ -312,7 +312,7 @@ class TestGitArgs:
         """The ONLY global options git_args emits are the `-c key=value`
         config forms, which git 2.39 (the minimum supported version) accepts.
         Long global flags like --no-advice (git >= 2.45) are forbidden: they
-        break on older installs (regression: clone_repo failed with `unknown
+        break on older installs (regression: cexp_clone_repo failed with `unknown
         option: --no-advice` on git 2.39.5)."""
         forbidden = {"--no-advice", "--no-pager", "--paginate", "--exec-path", "--html-path"}
         for args in [

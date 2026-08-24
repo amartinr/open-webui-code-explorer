@@ -94,7 +94,7 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path):
     # Clone with the Repos script.
     repos_tools = ReposTools()
     repos_tools.valves = repos_tools.Valves(repos_path=str(tmp_path / "repos"))
-    out = await repos_tools.clone_repo("o/r", url=f"file://{src}")
+    out = await repos_tools.cexp_clone_repo("o/r", url=f"file://{src}")
     assert not out.startswith("Error:"), out
 
     # Open WebUI injects the admin-saved valves onto a fresh instance.
@@ -105,20 +105,20 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path):
         max_lines=200,
         max_bytes=20480,
     )
-    out = await tools.list_files("o/r")
+    out = await tools.cexp_list_files("o/r")
     result = json.loads(out)
     assert len(result["items"]) == 2  # max_results=2 injected by the admin
     assert result["truncated"] == {"shown": 2, "total": 3}
 
     # The same injection flow for the Repos script: clone a second repo so
     # max_results=1 actually truncates.
-    out = await repos_tools.clone_repo("o/r2", url=f"file://{src}")
+    out = await repos_tools.cexp_clone_repo("o/r2", url=f"file://{src}")
     assert not out.startswith("Error:"), out
     repos_tools2 = ReposTools()
     repos_tools2.valves = repos_tools2.Valves(
         repos_path=str(tmp_path / "repos"), max_results=1
     )
-    out = await repos_tools2.list_repos()
+    out = await repos_tools2.cexp_list_repos()
     result = json.loads(out)
     assert len(result["items"]) == 1
     assert result["truncated"] == {"shown": 1, "total": 2}
@@ -140,19 +140,19 @@ def test_combined_script_loads_and_discovers_all_tools():
         and not inspect.isclass(getattr(tools, func))
     )
     assert discovered == [
-        "clone_repo",
-        "compare_commits",
-        "fetch_repo",
-        "list_branches",
-        "list_commits",
-        "list_files",
-        "list_repos",
-        "list_tags",
-        "pull_repo",
-        "read_file",
-        "search_symbol",
-        "search_text",
-        "show_commit",
+        "cexp_clone_repo",
+        "cexp_compare_commits",
+        "cexp_fetch_repo",
+        "cexp_list_branches",
+        "cexp_list_commits",
+        "cexp_list_files",
+        "cexp_list_repos",
+        "cexp_list_tags",
+        "cexp_pull_repo",
+        "cexp_read_file",
+        "cexp_search_symbol",
+        "cexp_search_text",
+        "cexp_show_commit",
     ]
     for name in discovered:
         assert getattr(tools, name).__doc__

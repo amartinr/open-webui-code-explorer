@@ -52,7 +52,7 @@ TIMEOUT_READ = 10
 TIMEOUT_SEARCH = 30
 TIMEOUT_COMMIT = 30
 
-# read_file safety limits: files larger than MAX_READ_BYTES are rejected;
+# cexp_read_file safety limits: files larger than MAX_READ_BYTES are rejected;
 # ranges larger than MAX_INLINE_LINES are streamed (only the shown lines are
 # read) instead of being read fully into memory.
 MAX_READ_BYTES = 50 * 1024 * 1024
@@ -348,7 +348,7 @@ def _line_is_binary(line: str) -> bool:
 
 
 def _is_binary_path(p: Path) -> bool:
-    """Binary check on a path, used by search_text (scans many files)."""
+    """Binary check on a path, used by cexp_search_text (scans many files)."""
     return _is_binary(_read_binary_sample(p))
 
 
@@ -559,7 +559,7 @@ def parse_filter(filter_str: Optional[str]) -> tuple:
 def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     """True iff `relpath` matches the include/exclude glob sets.
 
-    Used for the single-file case of list_files (fd-style semantics: globs are
+    Used for the single-file case of cexp_list_files (fd-style semantics: globs are
     matched against the full relative path).
     """
     if excludes and any(fnmatch.fnmatch(relpath, g) for g in excludes):
@@ -732,18 +732,18 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # list_branches
+    # cexp_list_branches
     # ------------------------------------------------------------------
 
-    async def list_branches(
+    async def cexp_list_branches(
         self,
         repo: str,
         remote: bool = False,
     ) -> str:
         """List branches of a repository.
 
-        Use to discover which branches exist before pointing clone_repo,
-        list_commits, show_commit, or compare_commits at a branch name.
+        Use to discover which branches exist before pointing cexp_clone_repo,
+        cexp_list_commits, cexp_show_commit, or cexp_compare_commits at a branch name.
         Local branches by default; with remote=True, remote-tracking branches
         appear as origin/<name> (reflecting the last fetch, never the live
         network state). Returns a JSON object with an items array of
@@ -789,14 +789,14 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # list_tags
+    # cexp_list_tags
     # ------------------------------------------------------------------
 
-    async def list_tags(self, repo: str) -> str:
+    async def cexp_list_tags(self, repo: str) -> str:
         """List tags of a repository, newest first.
 
-        Use to see which release tags exist before clone_repo(ref=\"release\"),
-        compare_commits, or show_commit on a tag. Returns a JSON object with
+        Use to see which release tags exist before cexp_clone_repo(ref=\"release\"),
+        cexp_compare_commits, or cexp_show_commit on a tag. Returns a JSON object with
         an items array of tag names.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
@@ -826,10 +826,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # list_commits
+    # cexp_list_commits
     # ------------------------------------------------------------------
 
-    async def list_commits(
+    async def cexp_list_commits(
         self,
         repo: str,
         ref_a: Optional[str] = None,
@@ -889,10 +889,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # show_commit
+    # cexp_show_commit
     # ------------------------------------------------------------------
 
-    async def show_commit(
+    async def cexp_show_commit(
         self,
         repo: str,
         commit: str,
@@ -929,10 +929,10 @@ class Tools:
         return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # compare_commits
+    # cexp_compare_commits
     # ------------------------------------------------------------------
 
-    async def compare_commits(
+    async def cexp_compare_commits(
         self,
         repo: str,
         ref_a: str,
@@ -993,6 +993,6 @@ class Tools:
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
             raise ToolError(
-                f"repository not cloned yet: {repo} (use clone_repo first)",
+                f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
             )

@@ -1,6 +1,6 @@
 """
 title: Code Explorer - All
-description: All Code Explorer tools in one script: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
+description: All Code Explorer tools in one script, prefixed cexp_: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
 """
 import itertools
@@ -54,7 +54,7 @@ TIMEOUT_READ = 10
 TIMEOUT_SEARCH = 30
 TIMEOUT_COMMIT = 30
 
-# read_file safety limits: files larger than MAX_READ_BYTES are rejected;
+# cexp_read_file safety limits: files larger than MAX_READ_BYTES are rejected;
 # ranges larger than MAX_INLINE_LINES are streamed (only the shown lines are
 # read) instead of being read fully into memory.
 MAX_READ_BYTES = 50 * 1024 * 1024
@@ -350,7 +350,7 @@ def _line_is_binary(line: str) -> bool:
 
 
 def _is_binary_path(p: Path) -> bool:
-    """Binary check on a path, used by search_text (scans many files)."""
+    """Binary check on a path, used by cexp_search_text (scans many files)."""
     return _is_binary(_read_binary_sample(p))
 
 
@@ -561,7 +561,7 @@ def parse_filter(filter_str: Optional[str]) -> tuple:
 def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     """True iff `relpath` matches the include/exclude glob sets.
 
-    Used for the single-file case of list_files (fd-style semantics: globs are
+    Used for the single-file case of cexp_list_files (fd-style semantics: globs are
     matched against the full relative path).
     """
     if excludes and any(fnmatch.fnmatch(relpath, g) for g in excludes):
@@ -733,7 +733,7 @@ class Tools:
             20480, description="Hard byte cap on tool output (20 KB default)."
         )
 
-    async def clone_repo(
+    async def cexp_clone_repo(
         self,
         repo: str,
         url: Optional[str] = None,
@@ -743,7 +743,7 @@ class Tools:
 
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
-        nothing is modified - use fetch_repo, pull_repo, or list_repos instead.
+        nothing is modified - use cexp_fetch_repo, cexp_pull_repo, or cexp_list_repos instead.
         After cloning, the requested ref is checked out. Returns a JSON object
         with repo, path, default_branch, ref, and status.
 
@@ -763,8 +763,8 @@ class Tools:
         root = resolve_repo_root(repo, repos_path)
         if root.exists():
             raise ToolError(
-                f"{repo} already exists at {root}; use fetch_repo, pull_repo, "
-                "or list_repos instead (no destructive overwrite)"
+                f"{repo} already exists at {root}; use cexp_fetch_repo, cexp_pull_repo, "
+                "or cexp_list_repos instead (no destructive overwrite)"
             )
         if url is not None:
             url = url.strip()
@@ -856,7 +856,7 @@ class Tools:
         if root.exists() and not (root / ".git").exists():
             shutil.rmtree(root, ignore_errors=True)
 
-    async def fetch_repo(self, repo: str) -> str:
+    async def cexp_fetch_repo(self, repo: str) -> str:
         """Fetch new branches and tags from all remotes.
 
         Use to bring newly published branches/tags into an existing clone
@@ -915,12 +915,12 @@ class Tools:
             refs[name] = oid
         return refs
 
-    async def pull_repo(self, repo: str) -> str:
+    async def cexp_pull_repo(self, repo: str) -> str:
         """Fast-forward the current branch of an existing clone.
 
         Use to keep a moving branch (e.g. dev) up to date. Only fast-forward
         updates are allowed: never creates a merge commit, never leaves the
-        repo conflicted. Fails cleanly on a detached HEAD (use fetch_repo
+        repo conflicted. Fails cleanly on a detached HEAD (use cexp_fetch_repo
         there) and when the local branch has diverged. Returns a JSON object
         with repo and result (up_to_date or fast_forwarded).
 
@@ -938,8 +938,8 @@ class Tools:
         branch = res.stdout.strip()
         if branch == "HEAD":
             raise ToolError(
-                f"{repo} is on a detached HEAD; pull_repo only moves branches. "
-                "Use fetch_repo to update refs without touching the working tree."
+                f"{repo} is on a detached HEAD; cexp_pull_repo only moves branches. "
+                "Use cexp_fetch_repo to update refs without touching the working tree."
             )
         res = await run_allowed(
             git_args("-C", str(root), "pull", "--ff-only", "--no-progress"),
@@ -969,7 +969,7 @@ class Tools:
             self.valves.max_bytes,
         )
 
-    async def list_repos(self) -> str:
+    async def cexp_list_repos(self) -> str:
         """List all cloned repositories under the storage area.
 
         Use to see what is already cloned (owner/name and current branch)
@@ -1020,11 +1020,11 @@ class Tools:
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
             raise ToolError(
-                f"repository not cloned yet: {repo} (use clone_repo first)",
+                f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
             )
 
-    async def list_files(
+    async def cexp_list_files(
         self,
         repo: str,
         path: Optional[str] = None,
@@ -1096,7 +1096,7 @@ class Tools:
             data["items"] = items[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
 
-    async def read_file(
+    async def cexp_read_file(
         self,
         repo: str,
         path: str,
@@ -1105,7 +1105,7 @@ class Tools:
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
-        Use to inspect file contents. Example: read_file("owner/repo",
+        Use to inspect file contents. Example: cexp_read_file("owner/repo",
         "src/main.py"). Accepts an optional 1-based start/end line range.
         Returns raw text (no line numbers, no headers); a trailing marker is
         appended when output is truncated. Binary and non-UTF-8 files are
@@ -1189,7 +1189,7 @@ class Tools:
             result = _trim_bytes(text, budget) + bmarker
         return result
 
-    async def search_text(
+    async def cexp_search_text(
         self,
         repo: str,
         query: str,
@@ -1250,7 +1250,7 @@ class Tools:
             data["items"] = items[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
 
-    async def search_symbol(
+    async def cexp_search_symbol(
         self,
         repo: str,
         query: str,
@@ -1330,7 +1330,7 @@ class Tools:
 
     def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
         """Yield (rel_path, Path) for every text file under `base` that passes
-        the .gitignore and filter globs. Shared by search_text/search_symbol."""
+        the .gitignore and filter globs. Shared by cexp_search_text/cexp_search_symbol."""
         spec = _load_ignore_spec(root)
         if base.is_file():
             rel_f = _try_decode_rel(base, root)
@@ -1372,15 +1372,15 @@ class Tools:
                     continue
                 yield rel_f, fp
 
-    async def list_branches(
+    async def cexp_list_branches(
         self,
         repo: str,
         remote: bool = False,
     ) -> str:
         """List branches of a repository.
 
-        Use to discover which branches exist before pointing clone_repo,
-        list_commits, show_commit, or compare_commits at a branch name.
+        Use to discover which branches exist before pointing cexp_clone_repo,
+        cexp_list_commits, cexp_show_commit, or cexp_compare_commits at a branch name.
         Local branches by default; with remote=True, remote-tracking branches
         appear as origin/<name> (reflecting the last fetch, never the live
         network state). Returns a JSON object with an items array of
@@ -1425,11 +1425,11 @@ class Tools:
             data["items"] = items[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
 
-    async def list_tags(self, repo: str) -> str:
+    async def cexp_list_tags(self, repo: str) -> str:
         """List tags of a repository, newest first.
 
-        Use to see which release tags exist before clone_repo(ref=\"release\"),
-        compare_commits, or show_commit on a tag. Returns a JSON object with
+        Use to see which release tags exist before cexp_clone_repo(ref=\"release\"),
+        cexp_compare_commits, or cexp_show_commit on a tag. Returns a JSON object with
         an items array of tag names.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
@@ -1458,7 +1458,7 @@ class Tools:
             data["items"] = tags[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
 
-    async def list_commits(
+    async def cexp_list_commits(
         self,
         repo: str,
         ref_a: Optional[str] = None,
@@ -1517,7 +1517,7 @@ class Tools:
             data["items"] = items[: self.valves.max_results]
         return json_output(data, self.valves.max_bytes)
 
-    async def show_commit(
+    async def cexp_show_commit(
         self,
         repo: str,
         commit: str,
@@ -1553,7 +1553,7 @@ class Tools:
             raise ToolError(f"show commit failed: {commit!r}", cause=trim_cause(res.stderr))
         return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
 
-    async def compare_commits(
+    async def cexp_compare_commits(
         self,
         repo: str,
         ref_a: str,

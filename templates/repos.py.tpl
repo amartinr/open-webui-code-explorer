@@ -31,10 +31,10 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # clone_repo
+    # cexp_clone_repo
     # ------------------------------------------------------------------
 
-    async def clone_repo(
+    async def cexp_clone_repo(
         self,
         repo: str,
         url: Optional[str] = None,
@@ -44,7 +44,7 @@ class Tools:
 
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
-        nothing is modified - use fetch_repo, pull_repo, or list_repos instead.
+        nothing is modified - use cexp_fetch_repo, cexp_pull_repo, or cexp_list_repos instead.
         After cloning, the requested ref is checked out. Returns a JSON object
         with repo, path, default_branch, ref, and status.
 
@@ -64,8 +64,8 @@ class Tools:
         root = resolve_repo_root(repo, repos_path)
         if root.exists():
             raise ToolError(
-                f"{repo} already exists at {root}; use fetch_repo, pull_repo, "
-                "or list_repos instead (no destructive overwrite)"
+                f"{repo} already exists at {root}; use cexp_fetch_repo, cexp_pull_repo, "
+                "or cexp_list_repos instead (no destructive overwrite)"
             )
         if url is not None:
             url = url.strip()
@@ -158,10 +158,10 @@ class Tools:
             shutil.rmtree(root, ignore_errors=True)
 
     # ------------------------------------------------------------------
-    # fetch_repo
+    # cexp_fetch_repo
     # ------------------------------------------------------------------
 
-    async def fetch_repo(self, repo: str) -> str:
+    async def cexp_fetch_repo(self, repo: str) -> str:
         """Fetch new branches and tags from all remotes.
 
         Use to bring newly published branches/tags into an existing clone
@@ -221,15 +221,15 @@ class Tools:
         return refs
 
     # ------------------------------------------------------------------
-    # pull_repo
+    # cexp_pull_repo
     # ------------------------------------------------------------------
 
-    async def pull_repo(self, repo: str) -> str:
+    async def cexp_pull_repo(self, repo: str) -> str:
         """Fast-forward the current branch of an existing clone.
 
         Use to keep a moving branch (e.g. dev) up to date. Only fast-forward
         updates are allowed: never creates a merge commit, never leaves the
-        repo conflicted. Fails cleanly on a detached HEAD (use fetch_repo
+        repo conflicted. Fails cleanly on a detached HEAD (use cexp_fetch_repo
         there) and when the local branch has diverged. Returns a JSON object
         with repo and result (up_to_date or fast_forwarded).
 
@@ -247,8 +247,8 @@ class Tools:
         branch = res.stdout.strip()
         if branch == "HEAD":
             raise ToolError(
-                f"{repo} is on a detached HEAD; pull_repo only moves branches. "
-                "Use fetch_repo to update refs without touching the working tree."
+                f"{repo} is on a detached HEAD; cexp_pull_repo only moves branches. "
+                "Use cexp_fetch_repo to update refs without touching the working tree."
             )
         res = await run_allowed(
             git_args("-C", str(root), "pull", "--ff-only", "--no-progress"),
@@ -279,10 +279,10 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # list_repos
+    # cexp_list_repos
     # ------------------------------------------------------------------
 
-    async def list_repos(self) -> str:
+    async def cexp_list_repos(self) -> str:
         """List all cloned repositories under the storage area.
 
         Use to see what is already cloned (owner/name and current branch)
@@ -337,6 +337,6 @@ class Tools:
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
             raise ToolError(
-                f"repository not cloned yet: {repo} (use clone_repo first)",
+                f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
             )

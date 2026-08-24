@@ -17,19 +17,19 @@ write inside the allow-listed storage area).
 1. **Scope before searching.** Always pass `repo` and, when possible, a narrow
    `path` or `filter` before broad searches. Never run an unscoped search over
    the whole storage area.
-2. **Explore structure first.** Prefer `list_files` (optionally with
+2. **Explore structure first.** Prefer `cexp_list_files` (optionally with
    `type`/`filter`/`max_depth`) to understand a repository's layout before
    reading files.
-3. **Read what you need, not everything.** Use `read_file` with a `start`/`end`
-   line range for large files; prefer targeted `search_text`/`search_symbol`
+3. **Read what you need, not everything.** Use `cexp_read_file` with a `start`/`end`
+   line range for large files; prefer targeted `cexp_search_text`/`cexp_search_symbol`
    over reading whole files.
-4. **Know the difference between mention and definition.** Use `search_text`
-   to find where text appears; use `search_symbol` to find where a symbol is
-   *defined*. `search_symbol` is a heuristic, not a full parser: expect
+4. **Know the difference between mention and definition.** Use `cexp_search_text`
+   to find where text appears; use `cexp_search_symbol` to find where a symbol is
+   *defined*. `cexp_search_symbol` is a heuristic, not a full parser: expect
    occasional false positives/negatives on exotic syntax.
 5. **Compare and reason about history with the right tools.** Use
-   `list_commits` / `show_commit` / `compare_commits` when asked about
-   changes, versions, or releases; `list_branches` / `list_tags` to discover
+   `cexp_list_commits` / `cexp_show_commit` / `cexp_compare_commits` when asked about
+   changes, versions, or releases; `cexp_list_branches` / `cexp_list_tags` to discover
    which refs exist before pointing another tool at a name.
 6. **Truncated results are incomplete.** If a result carries a truncation
    marker (JSON `truncated` field, or a trailing `... (truncated: ...)` in raw
@@ -41,20 +41,20 @@ write inside the allow-listed storage area).
 ## Presentation
 
 - Tools return **data**, not presentation: structured tools return JSON
-  objects; content tools (`read_file`, `show_commit`, `compare_commits`)
+  objects; content tools (`cexp_read_file`, `cexp_show_commit`, `cexp_compare_commits`)
   return **raw text**, faithful to the file or diff, with a truncation marker
   when capped. Do not expect fences in the tool output.
 - **When quoting code excerpts to the user, render them as fenced markdown
   code blocks with the appropriate language tag** (e.g. ```` ```python ````),
   rather than pasting raw text inline.
 - Prefer concise summaries over dumping full raw output: quote only the
-  relevant excerpt (line numbers from `read_file`/`search_text` help you cite
+  relevant excerpt (line numbers from `cexp_read_file`/`cexp_search_text` help you cite
   precisely).
 
 ## Output shapes (what to expect)
 
 | Tool | Returns |
 |---|---|
-| `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos`, `list_files`, `search_text`, `search_symbol`, `list_branches`, `list_tags`, `list_commits` | JSON object (possibly with `truncated` metadata) |
-| `read_file` | Raw file text (or requested range) with truncation marker |
-| `show_commit`, `compare_commits` | Raw git show/diff output (or `--stat`) with truncation marker |
+| `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos`, `cexp_list_files`, `cexp_search_text`, `cexp_search_symbol`, `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits` | JSON object (possibly with `truncated` metadata) |
+| `cexp_read_file` | Raw file text (or requested range) with truncation marker |
+| `cexp_show_commit`, `cexp_compare_commits` | Raw git show/diff output (or `--stat`) with truncation marker |

@@ -1,5 +1,5 @@
 """Integration tests for the Phase 3 Commits script
-(list_branches, list_tags, list_commits, show_commit, compare_commits).
+(cexp_list_branches, cexp_list_tags, cexp_list_commits, cexp_show_commit, cexp_compare_commits).
 
 All tests operate on a local file:// repository with real git history
 (branches, tags, multiple commits, a diverging branch), so no network is
@@ -76,20 +76,20 @@ def parse_json(out: str) -> dict:
 async def clone_source(repos_path: Path, source: Path, name: str = "testowner/testrepo") -> Tools:
     repos_tools = ReposTools()
     repos_tools.valves.repos_path = str(repos_path)
-    out = await repos_tools.clone_repo(name, url=f"file://{source}")
+    out = await repos_tools.cexp_clone_repo(name, url=f"file://{source}")
     assert not out.startswith("Error:"), out
     return make_tools(repos_path)
 
 
 # ---------------------------------------------------------------------------
-# list_branches
+# cexp_list_branches
 # ---------------------------------------------------------------------------
 
 
 class TestListBranches:
     async def test_local_branches_with_current_marker(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_branches("testowner/testrepo")
+        out = await tools.cexp_list_branches("testowner/testrepo")
         result = parse_json(out)
         by_name = {i["branch"]: i["current"] for i in result["items"]}
         # After a clone, only the default branch is local; dev is origin/dev.
@@ -99,7 +99,7 @@ class TestListBranches:
 
     async def test_remote_true_includes_remotes(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_branches("testowner/testrepo", remote=True)
+        out = await tools.cexp_list_branches("testowner/testrepo", remote=True)
         result = parse_json(out)
         names = {i["branch"] for i in result["items"]}
         assert "main" in names
@@ -111,28 +111,28 @@ class TestListBranches:
     async def test_detached_head_marks_current(self, repos_path, history_repo):
         repos_tools = ReposTools()
         repos_tools.valves.repos_path = str(repos_path)
-        await repos_tools.clone_repo("testowner/testrepo", url=f"file://{history_repo}", ref="v1.0.0")
+        await repos_tools.cexp_clone_repo("testowner/testrepo", url=f"file://{history_repo}", ref="v1.0.0")
         tools = make_tools(repos_path)
-        out = await tools.list_branches("testowner/testrepo")
+        out = await tools.cexp_list_branches("testowner/testrepo")
         result = parse_json(out)
         # Detached HEAD: none marked current.
         assert all(not i["current"] for i in result["items"])
 
     async def test_repo_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.list_branches("o/r")
+        out = await tools.cexp_list_branches("o/r")
         assert out.startswith("Not found:")
 
 
 # ---------------------------------------------------------------------------
-# list_tags
+# cexp_list_tags
 # ---------------------------------------------------------------------------
 
 
 class TestListTags:
     async def test_lists_tags_newest_first(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_tags("testowner/testrepo")
+        out = await tools.cexp_list_tags("testowner/testrepo")
         result = parse_json(out)
         assert result["items"] == ["v1.1.0", "v1.0.0"]
 
@@ -143,19 +143,19 @@ class TestListTags:
         assert res.returncode == 0
         await commit_file(src, "a.txt", "a\n", "init")
         tools = await clone_source(repos_path, src)
-        out = await tools.list_tags("testowner/testrepo")
+        out = await tools.cexp_list_tags("testowner/testrepo")
         assert parse_json(out)["items"] == []
 
 
 # ---------------------------------------------------------------------------
-# list_commits
+# cexp_list_commits
 # ---------------------------------------------------------------------------
 
 
 class TestListCommits:
     async def test_default_head_history(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_commits("testowner/testrepo")
+        out = await tools.cexp_list_commits("testowner/testrepo")
         result = parse_json(out)
         subjects = [i["subject"] for i in result["items"]]
         assert "fix: return 2" in subjects
@@ -167,7 +167,7 @@ class TestListCommits:
 
     async def test_range(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_commits("testowner/testrepo", ref_a="v1.0.0", ref_b="main")
+        out = await tools.cexp_list_commits("testowner/testrepo", ref_a="v1.0.0", ref_b="main")
         result = parse_json(out)
         subjects = [i["subject"] for i in result["items"]]
         assert "feat: return 1" in subjects
@@ -176,91 +176,91 @@ class TestListCommits:
 
     async def test_path_narrowing(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_commits("testowner/testrepo", path="util.py")
+        out = await tools.cexp_list_commits("testowner/testrepo", path="util.py")
         result = parse_json(out)
         subjects = [i["subject"] for i in result["items"]]
         assert subjects == ["add util"]
 
     async def test_bad_ref_fails_cleanly(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_commits("testowner/testrepo", ref_b="nonexistent-ref")
+        out = await tools.cexp_list_commits("testowner/testrepo", ref_b="nonexistent-ref")
         assert out.startswith("Error:")
         assert "cause:" in out
 
     async def test_path_traversal_rejected(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.list_commits("testowner/testrepo", path="../evil")
+        out = await tools.cexp_list_commits("testowner/testrepo", path="../evil")
         assert out.startswith("Error:")
 
 
 # ---------------------------------------------------------------------------
-# show_commit
+# cexp_show_commit
 # ---------------------------------------------------------------------------
 
 
 class TestShowCommit:
     async def test_shows_commit(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.show_commit("testowner/testrepo", "v1.0.0")
+        out = await tools.cexp_show_commit("testowner/testrepo", "v1.0.0")
         assert "add app" in out
         assert "app.py" in out
         assert "def main():" in out
 
     async def test_show_by_branch_and_path(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.show_commit("testowner/testrepo", "main", path="app.py")
+        out = await tools.cexp_show_commit("testowner/testrepo", "main", path="app.py")
         assert "return 2" in out
         assert "util.py" not in out
 
     async def test_bad_commit_fails_cleanly(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.show_commit("testowner/testrepo", "deadbeef")
+        out = await tools.cexp_show_commit("testowner/testrepo", "deadbeef")
         assert out.startswith("Error:")
         assert "cause:" in out
 
     async def test_empty_commit_rejected(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.show_commit("testowner/testrepo", "   ")
+        out = await tools.cexp_show_commit("testowner/testrepo", "   ")
         assert out.startswith("Error:")
 
     async def test_line_cap(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
         tools.valves.max_lines = 5
-        out = await tools.show_commit("testowner/testrepo", "v1.0.0")
+        out = await tools.cexp_show_commit("testowner/testrepo", "v1.0.0")
         assert "truncated" in out
 
 
 # ---------------------------------------------------------------------------
-# compare_commits
+# cexp_compare_commits
 # ---------------------------------------------------------------------------
 
 
 class TestCompareCommits:
     async def test_three_dot_diff(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.compare_commits("testowner/testrepo", "v1.0.0", "main")
+        out = await tools.cexp_compare_commits("testowner/testrepo", "v1.0.0", "main")
         assert "feat: return 1" in out or "diff" in out or "app.py" in out
 
     async def test_stat_summary(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.compare_commits("testowner/testrepo", "v1.0.0", "main", stat=True)
+        out = await tools.cexp_compare_commits("testowner/testrepo", "v1.0.0", "main", stat=True)
         assert "app.py" in out
         assert "file changed" in out or "files changed" in out
 
     async def test_path_narrowing(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.compare_commits("testowner/testrepo", "v1.0.0", "main", path="util.py")
+        out = await tools.cexp_compare_commits("testowner/testrepo", "v1.0.0", "main", path="util.py")
         assert "util.py" in out
         assert "app.py" not in out
 
     async def test_missing_refs_rejected(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.compare_commits("testowner/testrepo", "", "main")
+        out = await tools.cexp_compare_commits("testowner/testrepo", "", "main")
         assert out.startswith("Error:")
 
     async def test_bad_ref_fails_cleanly(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
-        out = await tools.compare_commits("testowner/testrepo", "v1.0.0", "nope")
+        out = await tools.cexp_compare_commits("testowner/testrepo", "v1.0.0", "nope")
         assert out.startswith("Error:")
 
 
@@ -285,11 +285,11 @@ class TestOpenWebUILoading:
             and not inspect.isclass(getattr(tools, func))
         ]
         assert sorted(discovered) == [
-            "compare_commits",
-            "list_branches",
-            "list_commits",
-            "list_tags",
-            "show_commit",
+            "cexp_compare_commits",
+            "cexp_list_branches",
+            "cexp_list_commits",
+            "cexp_list_tags",
+            "cexp_show_commit",
         ]
         for name in discovered:
             assert getattr(tools, name).__doc__
@@ -303,7 +303,7 @@ class TestOpenWebUILoading:
         exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
         tools = module.Tools()
 
-        for name in ["list_branches", "list_tags", "list_commits", "show_commit", "compare_commits"]:
+        for name in ["cexp_list_branches", "cexp_list_tags", "cexp_list_commits", "cexp_show_commit", "cexp_compare_commits"]:
             func = getattr(tools, name)
             doc = func.__doc__ or ""
             sig_params = set(inspect.signature(func).parameters)

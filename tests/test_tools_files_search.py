@@ -1,5 +1,5 @@
 """Integration tests for the Phase 2 Files & Search script
-(list_files, read_file, search_text).
+(cexp_list_files, cexp_read_file, cexp_search_text).
 
 All tests operate on a local file:// repository created on the fly, so no
 network access is needed.
@@ -71,20 +71,20 @@ async def clone_source(repos_path: Path, source: Path, name: str = "testowner/te
     """Clone with the Repos script tools, then hand the Files & Search tools."""
     repos_tools = ReposTools()
     repos_tools.valves.repos_path = str(repos_path)
-    out = await repos_tools.clone_repo(name, url=f"file://{source}")
+    out = await repos_tools.cexp_clone_repo(name, url=f"file://{source}")
     assert not out.startswith("Error:"), out
     return make_tools(repos_path)
 
 
 # ---------------------------------------------------------------------------
-# list_files
+# cexp_list_files
 # ---------------------------------------------------------------------------
 
 
 class TestListFiles:
     async def test_lists_structure_at_root(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.list_files("testowner/testrepo")
+        out = await tools.cexp_list_files("testowner/testrepo")
 
         result = parse_json(out)
         by_path = {i["path"]: i["kind"] for i in result["items"]}
@@ -99,19 +99,19 @@ class TestListFiles:
 
     async def test_type_file(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", type="file"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", type="file"))
         assert all(i["kind"] == "file" for i in result["items"])
         assert "sub" not in [i["path"] for i in result["items"]]
 
     async def test_type_dir(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", type="dir"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", type="dir"))
         assert all(i["kind"] == "dir" for i in result["items"])
         assert [i["path"] for i in result["items"]] == ["sub"]
 
     async def test_max_depth(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", max_depth=1))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", max_depth=1))
         paths = {i["path"] for i in result["items"]}
         assert "hello.py" in paths
         assert "sub" in paths
@@ -119,7 +119,7 @@ class TestListFiles:
 
     async def test_filter_include_glob(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", filter="*.py"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="*.py"))
         paths = [i["path"] for i in result["items"]]
         assert "hello.py" in paths
         assert "sub/deep.py" in paths
@@ -128,48 +128,48 @@ class TestListFiles:
 
     async def test_filter_exclude_glob(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", filter="!*.md"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="!*.md"))
         paths = [i["path"] for i in result["items"]]
         assert "world.md" not in paths
         assert "hello.py" in paths
 
     async def test_subdirectory_path_relative_to_root(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", path="sub"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", path="sub"))
         assert [i["path"] for i in result["items"]] == ["sub/deep.py"]
 
     async def test_single_file_path(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.list_files("testowner/testrepo", path="hello.py"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", path="hello.py"))
         assert [i["path"] for i in result["items"]] == ["hello.py"]
         # file path with a filter that excludes it -> empty
         result = parse_json(
-            await tools.list_files("testowner/testrepo", path="hello.py", filter="*.md")
+            await tools.cexp_list_files("testowner/testrepo", path="hello.py", filter="*.md")
         )
         assert result["items"] == []
 
     async def test_path_not_found(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.list_files("testowner/testrepo", path="nope")
+        out = await tools.cexp_list_files("testowner/testrepo", path="nope")
         assert out.startswith("Not found:")
 
     async def test_path_traversal_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         for bad in ["../evil", "..", "/etc"]:
-            out = await tools.list_files("testowner/testrepo", path=bad)
+            out = await tools.cexp_list_files("testowner/testrepo", path=bad)
             assert out.startswith("Error:"), bad
 
     async def test_invalid_type_and_depth(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.list_files("testowner/testrepo", type="bogus")
+        out = await tools.cexp_list_files("testowner/testrepo", type="bogus")
         assert out.startswith("Error:")
-        out = await tools.list_files("testowner/testrepo", max_depth=-1)
+        out = await tools.cexp_list_files("testowner/testrepo", max_depth=-1)
         assert out.startswith("Error:")
 
     async def test_max_results_cap(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         tools.valves.max_results = 2
-        result = parse_json(await tools.list_files("testowner/testrepo"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
         assert len(result["items"]) == 2
         assert result["truncated"]["total"] >= 2
 
@@ -181,13 +181,13 @@ class TestListFiles:
         (clone / "sub" / ".gitignore").write_text("*.gen\n")
         (clone / "sub" / "a.gen").write_text("sentinel_xyz\n")
 
-        result = parse_json(await tools.list_files("testowner/testrepo"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
         paths = [i["path"] for i in result["items"]]
         assert "sub/a.gen" not in paths
         assert "sub/deep.py" in paths
 
-        # search_text must also skip ignored files.
-        result = parse_json(await tools.search_text("testowner/testrepo", "sentinel_xyz"))
+        # cexp_search_text must also skip ignored files.
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "sentinel_xyz"))
         assert result["items"] == []
 
     async def test_nested_gitignore_negation(self, repos_path, source_repo):
@@ -198,43 +198,43 @@ class TestListFiles:
         (clone / "sub" / "a.gen").write_text("gen\n")
         (clone / "sub" / "keep.gen").write_text("keep\n")
 
-        result = parse_json(await tools.list_files("testowner/testrepo"))
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
         paths = [i["path"] for i in result["items"]]
         assert "sub/a.gen" not in paths
         assert "sub/keep.gen" in paths
 
     async def test_repo_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.list_files("o/r")
+        out = await tools.cexp_list_files("o/r")
         assert out.startswith("Not found:")
         assert "not cloned yet" in out
 
 
 # ---------------------------------------------------------------------------
-# read_file
+# cexp_read_file
 # ---------------------------------------------------------------------------
 
 
 class TestReadFile:
     async def test_read_full_file(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "hello.py")
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py")
         assert out == HELLO_PY
 
     async def test_read_line_range(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=2, end=3)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=2, end=3)
         assert out == "    return 'hi'\n\n"
 
     async def test_range_beyond_eof_clamped(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         # hello.py has 6 lines; lines 3-4 are empty.
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=4, end=999)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=4, end=999)
         assert out == "\ndef world(x):\n    return x * 2\n"
 
     async def test_binary_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "data.bin")
+        out = await tools.cexp_read_file("testowner/testrepo", "data.bin")
         assert out.startswith("Error:")
         assert "binary" in out.lower()
 
@@ -244,11 +244,11 @@ class TestReadFile:
         tools = await clone_source(repos_path, source_repo)
         clone = repos_path / "testowner" / "testrepo"
         (clone / "empty.txt").write_text("")
-        out = await tools.read_file("testowner/testrepo", "empty.txt")
+        out = await tools.cexp_read_file("testowner/testrepo", "empty.txt")
         assert out == ""
         # Explicit start=1 on an empty file is also fine; start>1 is a real error.
-        assert await tools.read_file("testowner/testrepo", "empty.txt", start=1) == ""
-        out = await tools.read_file("testowner/testrepo", "empty.txt", start=2)
+        assert await tools.cexp_read_file("testowner/testrepo", "empty.txt", start=1) == ""
+        out = await tools.cexp_read_file("testowner/testrepo", "empty.txt", start=2)
         assert out.startswith("Error:")
         assert "0 lines" in out
 
@@ -259,7 +259,7 @@ class TestReadFile:
         clone = repos_path / "testowner" / "testrepo"
         with open(clone / "late_bin.bin", "wb") as f:
             f.write(b"A" * 9000 + b"\x00\xff")
-        out = await tools.read_file("testowner/testrepo", "late_bin.bin")
+        out = await tools.cexp_read_file("testowner/testrepo", "late_bin.bin")
         assert out.startswith("Error:")
         assert "binary" in out.lower()
 
@@ -270,7 +270,7 @@ class TestReadFile:
         clone = repos_path / "testowner" / "testrepo"
         with open(clone / "late_invalid.txt", "wb") as f:
             f.write(b"B" * 9000 + b"\xff\xfe")
-        out = await tools.read_file("testowner/testrepo", "late_invalid.txt")
+        out = await tools.cexp_read_file("testowner/testrepo", "late_invalid.txt")
         assert out.startswith("Error:")
         assert "UTF-8" in out
 
@@ -282,49 +282,49 @@ class TestReadFile:
         with open(clone / "straddle.txt", "wb") as f:
             f.write(b"C" * 65535 + "é".encode("utf-8"))
         tools.valves.max_bytes = 200000  # line is ~65 KB; keep the é visible
-        out = await tools.read_file("testowner/testrepo", "straddle.txt", start=1, end=1)
+        out = await tools.cexp_read_file("testowner/testrepo", "straddle.txt", start=1, end=1)
         assert not out.startswith("Error:")
         assert "é" in out
 
     async def test_file_not_found(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "missing.py")
+        out = await tools.cexp_read_file("testowner/testrepo", "missing.py")
         assert out.startswith("Not found:")
 
     async def test_directory_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "sub")
+        out = await tools.cexp_read_file("testowner/testrepo", "sub")
         assert out.startswith("Error:")
         assert "directory" in out
 
     async def test_invalid_start(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=0)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=0)
         assert out.startswith("Error:")
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=-3)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=-3)
         assert out.startswith("Error:")
 
     async def test_start_beyond_eof(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=100)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=100)
         assert out.startswith("Error:")
         assert "beyond" in out
 
     async def test_end_before_start(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.read_file("testowner/testrepo", "hello.py", start=3, end=1)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", start=3, end=1)
         assert out.startswith("Error:")
 
     async def test_path_traversal_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         for bad in ["../outside.txt", "/etc/passwd"]:
-            out = await tools.read_file("testowner/testrepo", bad)
+            out = await tools.cexp_read_file("testowner/testrepo", bad)
             assert out.startswith("Error:"), bad
 
     async def test_line_cap_with_marker(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         tools.valves.max_lines = 5
-        out = await tools.read_file("testowner/testrepo", "big.txt")
+        out = await tools.cexp_read_file("testowner/testrepo", "big.txt")
         lines = out.splitlines()
         assert lines[0] == "line0000"
         assert any("truncated" in l for l in lines)
@@ -333,25 +333,25 @@ class TestReadFile:
     async def test_byte_cap_with_marker(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         tools.valves.max_bytes = 300
-        out = await tools.read_file("testowner/testrepo", "big.txt")
+        out = await tools.cexp_read_file("testowner/testrepo", "big.txt")
         assert len(out.encode("utf-8")) <= 300 + 200  # marker may add a bit
         assert "truncated" in out
 
     async def test_repo_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.read_file("o/r", "x.py")
+        out = await tools.cexp_read_file("o/r", "x.py")
         assert out.startswith("Not found:")
 
 
 # ---------------------------------------------------------------------------
-# search_text
+# cexp_search_text
 # ---------------------------------------------------------------------------
 
 
 class TestSearchText:
     async def test_finds_matches_with_line_numbers(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_text("testowner/testrepo", "def ")
+        out = await tools.cexp_search_text("testowner/testrepo", "def ")
         result = parse_json(out)
         items = result["items"]
         assert len(items) == 2
@@ -359,7 +359,7 @@ class TestSearchText:
         assert by[("hello.py", 1)] == "def hello():"
         assert by[("hello.py", 5)] == "def world(x):"
 
-        out = await tools.search_text("testowner/testrepo", "class ")
+        out = await tools.cexp_search_text("testowner/testrepo", "class ")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["path"] == "sub/deep.py"
@@ -367,26 +367,26 @@ class TestSearchText:
 
     async def test_no_matches_empty_items(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.search_text("testowner/testrepo", "zzzz_nothing_zzzz"))
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "zzzz_nothing_zzzz"))
         assert result["items"] == []
 
     async def test_case_sensitivity(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         # insensitive by default: matches lowercase and uppercase
-        insensitive = parse_json(await tools.search_text("testowner/testrepo", "HELLO"))
+        insensitive = parse_json(await tools.cexp_search_text("testowner/testrepo", "HELLO"))
         assert len(insensitive["items"]) >= 1
         sensitive = parse_json(
-            await tools.search_text("testowner/testrepo", "HELLO", case_sensitive=True)
+            await tools.cexp_search_text("testowner/testrepo", "HELLO", case_sensitive=True)
         )
         assert sensitive["items"] == []
         exact = parse_json(
-            await tools.search_text("testowner/testrepo", "hello", case_sensitive=True)
+            await tools.cexp_search_text("testowner/testrepo", "hello", case_sensitive=True)
         )
         assert len(exact["items"]) >= 1
 
     async def test_context_lines(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.search_text("testowner/testrepo", "return 'hi'", context=1))
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "return 'hi'", context=1))
         item = result["items"][0]
         assert item["line"] == 2
         assert "context" in item
@@ -394,69 +394,69 @@ class TestSearchText:
 
     async def test_filter_globs(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        py = parse_json(await tools.search_text("testowner/testrepo", "hello", filter="*.py"))
-        md = parse_json(await tools.search_text("testowner/testrepo", "hello", filter="*.md"))
+        py = parse_json(await tools.cexp_search_text("testowner/testrepo", "hello", filter="*.py"))
+        md = parse_json(await tools.cexp_search_text("testowner/testrepo", "hello", filter="*.md"))
         assert len(py["items"]) >= 1
         assert md["items"] == []
         # exclusion
         not_md = parse_json(
-            await tools.search_text("testowner/testrepo", "hello", filter="!*.md")
+            await tools.cexp_search_text("testowner/testrepo", "hello", filter="!*.md")
         )
         assert len(not_md["items"]) >= 1
 
     async def test_path_narrowing(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.search_text("testowner/testrepo", "Deep", path="sub"))
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "Deep", path="sub"))
         assert len(result["items"]) == 1
         assert result["items"][0]["path"] == "sub/deep.py"
 
     async def test_regex_query(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.search_text("testowner/testrepo", r"def \w+\("))
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", r"def \w+\("))
         assert len(result["items"]) >= 2
 
     async def test_empty_query_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_text("testowner/testrepo", "   ")
+        out = await tools.cexp_search_text("testowner/testrepo", "   ")
         assert out.startswith("Error:")
 
     async def test_path_not_found(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_text("testowner/testrepo", "hello", path="nope")
+        out = await tools.cexp_search_text("testowner/testrepo", "hello", path="nope")
         assert out.startswith("Not found:")
 
     async def test_path_traversal_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_text("testowner/testrepo", "hello", path="..")
+        out = await tools.cexp_search_text("testowner/testrepo", "hello", path="..")
         assert out.startswith("Error:")
 
     async def test_max_results_cap(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
         tools.valves.max_results = 2
-        result = parse_json(await tools.search_text("testowner/testrepo", "line00"))
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "line00"))
         assert len(result["items"]) == 2
         assert result["truncated"]["total"] >= 2
 
     async def test_negative_context_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_text("testowner/testrepo", "hello", context=-1)
+        out = await tools.cexp_search_text("testowner/testrepo", "hello", context=-1)
         assert out.startswith("Error:")
 
     async def test_repo_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.search_text("o/r", "hello")
+        out = await tools.cexp_search_text("o/r", "hello")
         assert out.startswith("Not found:")
 
 
 # ---------------------------------------------------------------------------
-# search_symbol
+# cexp_search_symbol
 # ---------------------------------------------------------------------------
 
 
 class TestSearchSymbol:
     async def test_finds_definitions(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "hello")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "hello")
         result = parse_json(out)
         items = result["items"]
         assert len(items) == 1
@@ -466,7 +466,7 @@ class TestSearchSymbol:
 
     async def test_finds_class(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "Deep")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "Deep")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["path"] == "sub/deep.py"
@@ -474,14 +474,14 @@ class TestSearchSymbol:
 
     async def test_partial_match(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "worl")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "worl")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["text"] == "def world(x):"
 
     async def test_case_sensitive(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "HELLO")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "HELLO")
         result = parse_json(out)
         assert result["items"] == []
 
@@ -490,7 +490,7 @@ class TestSearchSymbol:
         tools = await clone_source(repos_path, source_repo)
         clone = repos_path / "testowner" / "testrepo"
         (clone / "use.py").write_text("x = hello()\n")
-        out = await tools.search_symbol("testowner/testrepo", "hello")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "hello")
         result = parse_json(out)
         # Only the def in hello.py, not the call in use.py.
         assert len(result["items"]) == 1
@@ -498,15 +498,15 @@ class TestSearchSymbol:
 
     async def test_empty_query_rejected(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "   ")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "   ")
         assert out.startswith("Error:")
 
     async def test_path_narrowing(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        out = await tools.search_symbol("testowner/testrepo", "def", path="sub")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "def", path="sub")
         result = parse_json(out)
         assert result["items"] == []  # no 'def' definition in sub
-        out = await tools.search_symbol("testowner/testrepo", "Deep", path="sub")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "Deep", path="sub")
         assert len(parse_json(out)["items"]) == 1
 
     async def test_finds_async_def(self, repos_path, source_repo):
@@ -517,7 +517,7 @@ class TestSearchSymbol:
             "async def fetch_data():\n    pass\n\n"
             "async def run_task() -> dict:\n    return {}\n"
         )
-        out = await tools.search_symbol("testowner/testrepo", "fetch_data")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "fetch_data")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["path"] == "asyncmod.py"
@@ -530,7 +530,7 @@ class TestSearchSymbol:
         (clone / "classmod.py").write_text(
             "class Service:\n    async def run(self) -> dict:\n        return {}\n"
         )
-        out = await tools.search_symbol("testowner/testrepo", "run")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "run")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["text"] == "    async def run(self) -> dict:"
@@ -540,7 +540,7 @@ class TestSearchSymbol:
         tools = await clone_source(repos_path, source_repo)
         clone = repos_path / "testowner" / "testrepo"
         (clone / "util.js").write_text("export function helper() {}\n")
-        out = await tools.search_symbol("testowner/testrepo", "helper")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "helper")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["text"] == "export function helper() {}"
@@ -550,7 +550,7 @@ class TestSearchSymbol:
         tools = await clone_source(repos_path, source_repo)
         clone = repos_path / "testowner" / "testrepo"
         (clone / "lib.rs").write_text("pub fn compute() -> u32 { 1 }\n")
-        out = await tools.search_symbol("testowner/testrepo", "compute")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "compute")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["text"] == "pub fn compute() -> u32 { 1 }"
@@ -562,7 +562,7 @@ class TestSearchSymbol:
         (clone / "svc.go").write_text(
             "package svc\n\ntype R struct {}\n\nfunc (r *R) Method() int { return 0 }\n"
         )
-        out = await tools.search_symbol("testowner/testrepo", "Method")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "Method")
         result = parse_json(out)
         assert len(result["items"]) == 1
         assert result["items"][0]["text"] == "func (r *R) Method() int { return 0 }"
@@ -575,7 +575,7 @@ class TestSearchSymbol:
             "async def real():\n    pass\n\n"
             "result = await real()\n"
         )
-        out = await tools.search_symbol("testowner/testrepo", "real")
+        out = await tools.cexp_search_symbol("testowner/testrepo", "real")
         result = parse_json(out)
         # Only the definition line, not the `await real()` call.
         assert len(result["items"]) == 1
@@ -602,8 +602,8 @@ class TestOpenWebUILoading:
             and not func.startswith("_")
             and not inspect.isclass(getattr(tools, func))
         ]
-        # search_symbol was added in Phase 3 (§5.4).
-        assert sorted(discovered) == ["list_files", "read_file", "search_symbol", "search_text"]
+        # cexp_search_symbol was added in Phase 3 (§5.4).
+        assert sorted(discovered) == ["cexp_list_files", "cexp_read_file", "cexp_search_symbol", "cexp_search_text"]
         for name in discovered:
             assert getattr(tools, name).__doc__
 
@@ -616,7 +616,7 @@ class TestOpenWebUILoading:
         exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
         tools = module.Tools()
 
-        for name in ["list_files", "read_file", "search_text"]:
+        for name in ["cexp_list_files", "cexp_read_file", "cexp_search_text"]:
             func = getattr(tools, name)
             doc = func.__doc__ or ""
             sig_params = set(inspect.signature(func).parameters)
@@ -644,17 +644,17 @@ class TestOpenWebUILoading:
         module = types.ModuleType("files_search_script")
         exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
         tools = module.Tools()
-        for name in ["list_files", "read_file", "search_text", "search_symbol"]:
+        for name in ["cexp_list_files", "cexp_read_file", "cexp_search_text", "cexp_search_symbol"]:
             doc = getattr(tools, name).__doc__ or ""
             path_line = next(
                 (l for l in doc.splitlines() if l.strip().startswith(":param path:")), ""
             )
             assert "do NOT include" in path_line, f"{name}: path param lacks the prefix warning"
             assert "\"/\"" in path_line, f"{name}: path param lacks a separator note"
-        # read_file carries an explicit call example in its description
+        # cexp_read_file carries an explicit call example in its description
         # (wrapped across two docstring lines).
-        assert 'Example: read_file("owner/repo",' in getattr(tools, "read_file").__doc__
-        assert '"src/main.py").' in getattr(tools, "read_file").__doc__
+        assert 'Example: cexp_read_file("owner/repo",' in getattr(tools, "cexp_read_file").__doc__
+        assert '"src/main.py").' in getattr(tools, "cexp_read_file").__doc__
 
     async def test_works_without_fd_rg_binaries(self, tmp_path, monkeypatch):
         """The whole point of the pure-Python implementation: the deployment
@@ -676,13 +676,13 @@ class TestOpenWebUILoading:
         await init_repo(src)
         tools = await clone_source(tmp_path / "repos", src)
 
-        # list_files
-        result = parse_json(await tools.list_files("testowner/testrepo", filter="*.py"))
+        # cexp_list_files
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="*.py"))
         assert len(result["items"]) >= 1
-        # read_file
-        out = await tools.read_file("testowner/testrepo", "hello.py")
+        # cexp_read_file
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py")
         assert out == HELLO_PY
-        # search_text
-        result = parse_json(await tools.search_text("testowner/testrepo", "def "))
+        # cexp_search_text
+        result = parse_json(await tools.cexp_search_text("testowner/testrepo", "def "))
         assert len(result["items"]) >= 1
         assert result["items"][0]["text"].startswith("def ")

@@ -10,9 +10,9 @@ design, security model, and acceptance criteria.
 
 | Script | Tools | Phase |
 |---|---|---|
-| **Repos** (`dist/repos.py`) | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | 1 (implemented) |
-| **Files & Search** (`dist/files_search.py`) | `list_files`, `read_file`, `search_text`, `search_symbol` | 2/3 (implemented) |
-| **Commits** (`dist/commits.py`) | `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | 3 (implemented) |
+| **Repos** (`dist/repos.py`) | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos` | 1 (implemented) |
+| **Files & Search** (`dist/files_search.py`) | `cexp_list_files`, `cexp_read_file`, `cexp_search_text`, `cexp_search_symbol` | 2/3 (implemented) |
+| **Commits** (`dist/commits.py`) | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits` | 3 (implemented) |
 | **All** (`dist/code_explorer.py`) | all 13 tools in one script | 1-3 (implemented) |
 
 `dist/code_explorer.py` is a single-script alternative that exposes all 13
@@ -84,7 +84,7 @@ actual write permission is still granted by the mounted volume.
   (`GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_GLOBAL=/dev/null`, `LC_ALL=C`, …) so
   git can never prompt, page, localize, or read user/global config. File
   listing/reading/searching is pure Python (no `fd`/`rg` binaries needed).
-- **Read-only for code**: only `clone_repo` / `fetch_repo` / `pull_repo` write,
+- **Read-only for code**: only `cexp_clone_repo` / `cexp_fetch_repo` / `cexp_pull_repo` write,
   and only inside `<repos_path>` and only via `git`.
 - **Path sanitization**: `repo` must be `<owner>/<name>` with components
   matching `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` (never `.`/`..`); file paths are
@@ -96,17 +96,17 @@ actual write permission is still granted by the mounted volume.
 ## Tool conventions
 
 - Successful results are returned as **JSON objects** (indented, UTF-8, always
-  valid): `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos`,
-  `list_files`, `search_text`, `search_symbol`, `list_branches`, `list_tags`,
-  and `list_commits` expose named fields and a structured `truncated` field
+  valid): `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos`,
+  `cexp_list_files`, `cexp_search_text`, `cexp_search_symbol`, `cexp_list_branches`, `cexp_list_tags`,
+  and `cexp_list_commits` expose named fields and a structured `truncated` field
   (e.g. `{"shown": 2, "total": 5}`) instead of ad-hoc text markers.
-  `read_file` and the diff tools (`show_commit`, `compare_commits`) return
+  `cexp_read_file` and the diff tools (`cexp_show_commit`, `cexp_compare_commits`) return
   raw text on purpose: JSON-escaping code or diffs would obscure them.
 - Errors are returned as strings, never raised: `Error: <summary>` with an
   optional `cause:` line, `Not found:` for missing repos, `Timed out:` for
   timeouts.
 - Timeouts: clone 600 s, fetch/pull 120 s, misc 30 s.
-- `clone_repo(ref="release")` checks out the most recent release tag (highest
+- `cexp_clone_repo(ref="release")` checks out the most recent release tag (highest
   `v?X.Y.Z` semver; fallback: newest tag by commit date).
-- `pull_repo` is fast-forward only (`git pull --ff-only`): it never creates
-  merge commits and fails cleanly on a detached HEAD (use `fetch_repo` there).
+- `cexp_pull_repo` is fast-forward only (`git pull --ff-only`): it never creates
+  merge commits and fails cleanly on a detached HEAD (use `cexp_fetch_repo` there).

@@ -31,7 +31,7 @@ This is distinct from the documentation side, which is handled separately
   compare** code repositories through tools, never through its own shell or
   network.
 - Keep every tool **read-only** with respect to source code, except for the
-  `clone_repo`, `fetch_repo`, and `pull_repo` tools, which may only write
+  `cexp_clone_repo`, `cexp_fetch_repo`, and `cexp_pull_repo` tools, which may only write
   inside a dedicated, allow-listed repository directory.
 - Provide a **secure-by-default** surface: path sanitization, output size
   limits, allow-listed subprocesses, no arbitrary command execution.
@@ -86,7 +86,7 @@ These rules are non-negotiable and MUST be enforced by every tool.
    searching are implemented in pure Python (pathspec for `.gitignore`),
    so the deployment environment does NOT need fd/ripgrep.
 2. **Read-only for code.** No tool may create, modify, or delete files inside
-   repositories. Exception: the `clone_repo`, `fetch_repo`, and `pull_repo`
+   repositories. Exception: the `cexp_clone_repo`, `cexp_fetch_repo`, and `cexp_pull_repo`
    tools may write *only* into `<repos_path>`, and only via `git`.
 3. **Path sanitization.** Every `repo` and `path` parameter MUST be validated
    against path traversal (`..`, absolute paths, symlink escapes) and resolved
@@ -95,7 +95,7 @@ These rules are non-negotiable and MUST be enforced by every tool.
    limits (admin Valves, §5.5), truncating with an explicit "truncated" marker so
    the model knows results are incomplete.
 5. **No network from the model.** The model cannot reach the network. Only the
-   `clone_repo`, `fetch_repo`, and `pull_repo` tools may talk to remotes, and
+   `cexp_clone_repo`, `cexp_fetch_repo`, and `cexp_pull_repo` tools may talk to remotes, and
    only through `git` (clone/fetch/pull).
 6. **No execution of code.** Nothing is run, imported, or evaluated. Tools only
    read bytes and run Git.
@@ -142,9 +142,9 @@ by phase:
 
 | Script | Tools exposed | Phase(s) |
 |---|---|---|
-| **Repos** | `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos` | Phase 1 |
-| **Files & Search** | `list_files`, `read_file`, `search_text`, `search_symbol` | Phase 2 + `search_symbol` in Phase 3 |
-| **Commits** | `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | Phase 3 |
+| **Repos** | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos` | Phase 1 |
+| **Files & Search** | `cexp_list_files`, `cexp_read_file`, `cexp_search_text`, `cexp_search_symbol` | Phase 2 + `cexp_search_symbol` in Phase 3 |
+| **Commits** | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits` | Phase 3 |
 
 Rationale for this split:
 - **Per-script tool access in Open WebUI**: an operator can attach only the
@@ -153,8 +153,8 @@ Rationale for this split:
 - **Per-script Valves**: caps can be tuned per group (e.g. wider `max_results`
   for search than for file listing).
 
-Note: the "Files & Search" script is created in Phase 2 with `list_files`,
-`read_file`, and `search_text`. `search_symbol` is added to the same script in
+Note: the "Files & Search" script is created in Phase 2 with `cexp_list_files`,
+`cexp_read_file`, and `cexp_search_text`. `cexp_search_symbol` is added to the same script in
 Phase 3 (not stubbed earlier). The "Commits" script is created in Phase 3
 complete with all five tools (not stubbed earlier).
 
@@ -186,7 +186,7 @@ When a cap truncates output, the tool MUST make that explicit so the agent
 knows results are incomplete and can refine its query instead of assuming it
 saw everything. Structured (JSON) tools carry a `truncated` field
 (`{"shown": N, "total": M}`, plus `"reason"` when the binding cap is not the
-item count); raw-text tools (`read_file`, `show_commit`, `compare_commits`)
+item count); raw-text tools (`cexp_read_file`, `cexp_show_commit`, `cexp_compare_commits`)
 append the trailing marker `... (truncated: showing N of M)`.
 
 ### 5.6 Shared helper contract
@@ -244,8 +244,15 @@ All tools share these conventions. Implement them consistently.
   **granular**: one tool = one operation, and the name states what it does.
   There are no dispatch parameters (`action`/`mode`) anywhere in the project;
   every operation is a distinct tool.
+- **Prefix:** every public tool name is prefixed with `cexp_`
+  (`cexp_read_file`, `cexp_list_files`, ...). The `verb_noun` suffix is
+  unchanged; the prefix is an anti-collision measure: the generic names
+  (read_file, list_files, ...) could collide with third-party tools in shared
+  Open WebUI instances. If a collision still happens, Open WebUI's first-wins
+  mechanism (`utils/tools.py`) appends the tool_id (e.g.
+  `code_explorer_cexp_read_file`).
 - **Selector vocabulary** (one meaning per name, project-wide):
-  - `type` → file-type filter in `list_files` (`file | dir | all`).
+  - `type` → file-type filter in `cexp_list_files` (`file | dir | all`).
   - `filter` → see below.
 - **`filter` parameter:** named `filter` for model readability, but its value is a
   **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
@@ -253,9 +260,9 @@ All tools share these conventions. Implement them consistently.
   Python's `fnmatch` (fd/ripgrep-style: matched against the full relative path):
   - search: include → keep, exclude → drop.
   - list: include → keep, exclude → drop.
-  Used by `list_files`, `search_text`, and `search_symbol`.
+  Used by `cexp_list_files`, `cexp_search_text`, and `cexp_search_symbol`.
 - **Parameter style:** snake_case. Required vs. optional is stated per schema.
-- **`repo` scoping:** every tool (except `list_repos`) REQUIRES a `repo`
+- **`repo` scoping:** every tool (except `cexp_list_repos`) REQUIRES a `repo`
   (`<owner>/<repo>`) parameter. Tools never operate over the entire
   `<repos_path>` blindly.
 - **Output caps are Valves, not parameters.** `max_results`, `max_lines`, and
@@ -266,7 +273,7 @@ All tools share these conventions. Implement them consistently.
   Structured tools (clone/fetch/pull/list/search/commit enumerations) return a
   single JSON object: indented, UTF-8, always valid, with named fields and a
   structured `truncated` metadata field (§5.5, §9.3). Content tools
-  (`read_file`) and diff tools (`show_commit`, `compare_commits`) return raw
+  (`cexp_read_file`) and diff tools (`cexp_show_commit`, `cexp_compare_commits`) return raw
   text: JSON-escaping code or diffs would obscure the very thing the model
   wants to read. Errors keep the stable `Error:` prefix contract (§9.3),
   never JSON.
@@ -286,15 +293,15 @@ All tools share these conventions. Implement them consistently.
 Implementation is split into phases with clear dependencies. Each phase MUST be
 validated (see §8) before moving to the next.
 
-### Phase 1 — Foundation: `clone_repo`, `fetch_repo`, `pull_repo`, `list_repos`
+### Phase 1 — Foundation: `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos`
 
 > Goal: establish the storage layer and enable bringing code into the system.
 > These are the only tools that write to disk (inside the allow-listed repo dir).
 
-#### `clone_repo`
+#### `cexp_clone_repo`
 
 ```
-clone_repo(
+cexp_clone_repo(
   repo:  str      # required: "<owner>/<name>"
   url:   str      # optional: full clone URL (overrides repo)
   ref:   str      # optional: branch | tag | "release"
@@ -303,7 +310,7 @@ clone_repo(
 
 - Resolve target `<repos_path>/<owner>/<name>`.
 - If it already exists, return an error/notice telling the model to use
-  `fetch_repo`, `pull_repo`, or `list_repos` (no destructive overwrite).
+  `cexp_fetch_repo`, `cexp_pull_repo`, or `cexp_list_repos` (no destructive overwrite).
 - Run `git clone` (full clone; no shallow option).
 - After clone, if `ref` is given, checkout that ref.
 - `ref="release"` is a special value resolving to the most recent **release tag**:
@@ -312,10 +319,10 @@ clone_repo(
   line); error if the repo has no tags. This requires a full clone (tags included).
 - Return: target path, default branch, resolved `ref`, and short status.
 
-#### `fetch_repo`
+#### `cexp_fetch_repo`
 
 ```
-fetch_repo(
+cexp_fetch_repo(
   repo:  str      # required: "<owner>/<name>"
 )
 ```
@@ -327,16 +334,16 @@ fetch_repo(
   published tags while the checkout is on a detached HEAD (e.g. cloned at a
   specific tag) or on a branch you do not want to move.
 
-#### `pull_repo`
+#### `cexp_pull_repo`
 
 ```
-pull_repo(
+cexp_pull_repo(
   repo:  str      # required: "<owner>/<name>"
 )
 ```
 
 - Requires the repo to already exist and the checkout to be on a branch
-  (fails with a clear message if on a detached HEAD — use `fetch_repo` there).
+  (fails with a clear message if on a detached HEAD — use `cexp_fetch_repo` there).
 - Run `git pull --ff-only`.
 - `--ff-only` ensures the working tree only advances via fast-forward: it never
   creates merge commits and never leaves the repo in a conflicted state. If the
@@ -344,10 +351,10 @@ pull_repo(
 - Implicitly performs a fetch, so it also brings in new tags. It is the tool to
   use for keeping a moving branch (e.g. `dev`) up to date.
 
-#### `list_repos`
+#### `cexp_list_repos`
 
 ```
-list_repos()
+cexp_list_repos()
 ```
 
 - Enumerate existing clones under `<repos_path>` (owner/repo and, optionally,
@@ -356,7 +363,7 @@ list_repos()
 
 #### Phase 1 safety notes
 
-- Only `clone_repo` / `fetch_repo` / `pull_repo` write; all restrict writes to
+- Only `cexp_clone_repo` / `cexp_fetch_repo` / `cexp_pull_repo` write; all restrict writes to
   `<repos_path>`.
 - `repo` is validated via the shared helper `resolve_repo_root` (§5.6). The
   format is `<owner>/<name>`, each component matching
@@ -366,16 +373,16 @@ list_repos()
 
 ---
 
-### Phase 2 - Reading & searching: `list_files`, `read_file`, `search_text`
+### Phase 2 - Reading & searching: `cexp_list_files`, `cexp_read_file`, `cexp_search_text`
 
 > Goal: give the model the ability to navigate structure, read files, and find
 > code/text. Pure-Python implementation: no `fd`/`rg` binaries required
 > (pathspec for `.gitignore`, `regex` for searches, stdlib fallbacks).
 
-#### `list_files`
+#### `cexp_list_files`
 
 ```
-list_files(
+cexp_list_files(
   repo:      str                  # required: "<owner>/<name>"
   path:      str                  # optional (default repo root)
   max_depth: int                  # optional
@@ -390,10 +397,10 @@ list_files(
   the depth limit are listed but not descended), `type`, and `filter` globs.
   Capped by the `max_results` Valve.
 
-#### `read_file`
+#### `cexp_read_file`
 
 ```
-read_file(
+cexp_read_file(
   repo:  str      # required: "<owner>/<name>"
   path:  str      # required
   start: int      # optional (1-based line)
@@ -406,10 +413,10 @@ read_file(
   failed strict UTF-8 decode) and rejected with a clear message. Output capped
   by the `max_lines`/`max_bytes` Valves.
 
-#### `search_text`
+#### `cexp_search_text`
 
 ```
-search_text(
+cexp_search_text(
   repo:          str      # required: "<owner>/<name>"
   query:         str      # required
   path:          str      # optional: subdirectory/file to narrow scope
@@ -426,16 +433,16 @@ search_text(
 
 ---
 
-### Phase 3 — Comparative & symbolic: `search_symbol`, `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits`
+### Phase 3 — Comparative & symbolic: `cexp_search_symbol`, `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits`
 
 > Goal: reasoning about changes and navigating code by symbol, not just raw text —
 > plus discovering the named refs (branches, tags) the history/comparison tools
 > operate on.
 
-#### `search_symbol`
+#### `cexp_search_symbol`
 
 ```
-search_symbol(
+cexp_search_symbol(
   repo:   str      # required: "<owner>/<name>"
   query:  str      # required (symbol name or partial)
   path:   str      # optional: narrow scope
@@ -449,10 +456,10 @@ search_symbol(
   explicitly added to the allow-list.
 - Capped by the `max_results` Valve.
 
-#### `list_branches`
+#### `cexp_list_branches`
 
 ```
-list_branches(
+cexp_list_branches(
   repo:   str      # required: "<owner>/<name>"
   remote: bool     # optional, default false: also include remote-tracking branches
 )
@@ -463,27 +470,27 @@ list_branches(
   `origin/<name>`. Relative to the checked-out clone; never contacts the
   network (`origin/*` reflects the last fetch, not live state).
 - Sorted (git's default alphabetic order), capped by the `max_results` Valve.
-- Use before `clone_repo(ref=...)`, `list_commits`, or `compare_commits` to
+- Use before `cexp_clone_repo(ref=...)`, `cexp_list_commits`, or `cexp_compare_commits` to
   discover which branch names exist instead of guessing.
 
-#### `list_tags`
+#### `cexp_list_tags`
 
 ```
-list_tags(
+cexp_list_tags(
   repo:   str      # required: "<owner>/<name>"
 )
 ```
 
 - Runs `git tag -l --sort=-creatordate` (newest first), so the most recent
   tags appear before the `max_results` cap bites.
-- Use to see which release tags exist before `clone_repo(ref="release")`,
-  `compare_commits`, or `show_commit` on a tag.
+- Use to see which release tags exist before `cexp_clone_repo(ref="release")`,
+  `cexp_compare_commits`, or `cexp_show_commit` on a tag.
 - Capped by the `max_results` Valve.
 
-#### `list_commits`
+#### `cexp_list_commits`
 
 ```
-list_commits(
+cexp_list_commits(
   repo:  str      # required: "<owner>/<name>"
   ref_a: str      # optional (branch|tag|commit)
   ref_b: str      # optional (branch|tag|commit)
@@ -494,10 +501,10 @@ list_commits(
 - `git log --oneline [ref_a..ref_b] -- <path>`, capped by `max_results`. Defaults
   to current HEAD history when no refs are given.
 
-#### `show_commit`
+#### `cexp_show_commit`
 
 ```
-show_commit(
+cexp_show_commit(
   repo:   str      # required: "<owner>/<name>"
   commit: str      # required (commit hash or ref)
   path:   str      # optional: narrow scope
@@ -506,10 +513,10 @@ show_commit(
 
 - `git show <commit> -- <path>`, capped by `max_lines`/`max_bytes`.
 
-#### `compare_commits`
+#### `cexp_compare_commits`
 
 ```
-compare_commits(
+cexp_compare_commits(
   repo:  str      # required: "<owner>/<name>"
   ref_a: str      # required (branch|tag|commit)
   ref_b: str      # required (branch|tag|commit)
@@ -534,12 +541,12 @@ compare_commits(
 - Provide a **system prompt / skill** with usage rules (see
   `META_MODEL_PROMPT.md`, which is the canonical artifact):
   - Always scope with `repo` + narrow `path`/`filter` before broad searches.
-  - Prefer `list_files` to understand structure before reading.
-  - Use `list_commits` / `show_commit` / `compare_commits` when asked about changes/releases.
+  - Prefer `cexp_list_files` to understand structure before reading.
+  - Use `cexp_list_commits` / `cexp_show_commit` / `cexp_compare_commits` when asked about changes/releases.
   - Treat truncated results as incomplete; refine the query.
   - Tools return data, not presentation: quote code excerpts to the user as
     fenced markdown code blocks with a language tag (the model decides
-    presentation; `read_file`/diff tools stay raw by design, §9.3).
+    presentation; `cexp_read_file`/diff tools stay raw by design, §9.3).
 
 ### Phase 5 — (Optional) Documentation via Knowledge Base
 
@@ -557,22 +564,22 @@ Each phase is "done" only when all its criteria pass.
 
 ### Phase 1
 
-- [ ] `clone_repo` clones a public repo into `<repos_path>/<owner>/<name>`.
-- [ ] `clone_repo` on an existing repo fails gracefully (no overwrite).
-- [ ] `fetch_repo` updates branches/tags and reports changes, without touching
+- [ ] `cexp_clone_repo` clones a public repo into `<repos_path>/<owner>/<name>`.
+- [ ] `cexp_clone_repo` on an existing repo fails gracefully (no overwrite).
+- [ ] `cexp_fetch_repo` updates branches/tags and reports changes, without touching
       the working tree.
-- [ ] `pull_repo` fast-forwards the working tree on a branch; it fails cleanly
+- [ ] `cexp_pull_repo` fast-forwards the working tree on a branch; it fails cleanly
       on a detached HEAD and never creates a merge commit.
-- [ ] `list_repos` shows all clones with their owner/repo.
+- [ ] `cexp_list_repos` shows all clones with their owner/repo.
 - [ ] Path traversal and malformed `repo` values are rejected.
 - [ ] Env var `OWUI_REPOS_PATH` and Valve `repos_path` both affect location,
       with Valve taking precedence.
 
 ### Phase 2
 
-- [ ] `list_files` returns sorted relative paths, honoring max_depth/filter/type.
-- [ ] `read_file` reads a range; binary files are rejected cleanly.
-- [ ] `search_text` finds matches with line numbers and context.
+- [ ] `cexp_list_files` returns sorted relative paths, honoring max_depth/filter/type.
+- [ ] `cexp_read_file` reads a range; binary files are rejected cleanly.
+- [ ] `cexp_search_text` finds matches with line numbers and context.
 - [ ] All outputs respect the `max_results`/`max_lines`/`max_bytes` Valves and
       expose explicit truncation (a `truncated` field in JSON tools, a trailing
       marker in raw-text tools).
@@ -580,13 +587,13 @@ Each phase is "done" only when all its criteria pass.
 
 ### Phase 3
 
-- [ ] `search_symbol` locates definitions with reasonable precision.
-- [ ] `list_branches` lists local branches (current marked with `*`),
+- [ ] `cexp_search_symbol` locates definitions with reasonable precision.
+- [ ] `cexp_list_branches` lists local branches (current marked with `*`),
       optionally including remote-tracking ones, capped.
-- [ ] `list_tags` lists tags newest-first, capped.
-- [ ] `list_commits` lists history, capped.
-- [ ] `show_commit` displays a single commit.
-- [ ] `compare_commits` shows changes between two refs, with `--stat` support.
+- [ ] `cexp_list_tags` lists tags newest-first, capped.
+- [ ] `cexp_list_commits` lists history, capped.
+- [ ] `cexp_show_commit` displays a single commit.
+- [ ] `cexp_compare_commits` shows changes between two refs, with `--stat` support.
 
 ### Phase 4
 
@@ -628,9 +635,9 @@ open-webui-code-explorer/
   common.py              # shared helpers (§5.6), ToolError, allow-list, caps
   build.py               # inlines common.py into each template → dist/
   templates/
-    repos.py.tpl         # script "Repos": clone_repo, fetch_repo, pull_repo, list_repos
-    files_search.py.tpl  # script "Files & Search": list_files, read_file, search_text, search_symbol
-    commits.py.tpl       # script "Commits": list_branches, list_tags, list_commits, show_commit, compare_commits
+    repos.py.tpl         # script "Repos": cexp_clone_repo, cexp_fetch_repo, cexp_pull_repo, cexp_list_repos
+    files_search.py.tpl  # script "Files & Search": cexp_list_files, cexp_read_file, cexp_search_text, cexp_search_symbol
+    commits.py.tpl       # script "Commits": cexp_list_branches, cexp_list_tags, cexp_list_commits, cexp_show_commit, cexp_compare_commits
   dist/                  # GENERATED, self-contained scripts (paste into admin UI)
     repos.py
     files_search.py
@@ -670,20 +677,20 @@ that granularity matters.
 Structured tools return a single JSON object (indented, UTF-8, always valid).
 Content/diff tools return raw text. Errors keep the prefix shape below.
 
-- `clone_repo` / `pull_repo` / `fetch_repo`: a JSON object with named fields.
+- `cexp_clone_repo` / `cexp_pull_repo` / `cexp_fetch_repo`: a JSON object with named fields.
   ```
   {"repo": "open-webui/open-webui", "path": "/usr/local/src/open-webui/open-webui",
    "default_branch": "main", "ref": "main", "status": "clean"}
   ```
-- `list_files`: `{"items": ["src/open_webui/app.py", ...], "truncated": {"shown": 50, "total": 128}}`.
-- `list_repos`: `{"items": [{"repo": "owner/name", "branch": "main"}, ...], "truncated": {...}}`.
-- `list_branches`: `{"items": [{"branch": "main", "current": true}, ...], "truncated": {...}}`.
-- `list_tags`: `{"items": ["v1.1.0", "v1.0.0", ...], "truncated": {...}}`.
-- `list_commits`: `{"items": [{"hash": "a1b2c3d", "subject": "..."}, ...], "truncated": {...}}`.
-- `search_text` / `search_symbol`: `{"items": [{"path": "...", "line": 42, "text": "..."}, ...], "truncated": {...}}`.
-- `read_file`: raw file content (or the requested range), no added headers; a
+- `cexp_list_files`: `{"items": ["src/open_webui/app.py", ...], "truncated": {"shown": 50, "total": 128}}`.
+- `cexp_list_repos`: `{"items": [{"repo": "owner/name", "branch": "main"}, ...], "truncated": {...}}`.
+- `cexp_list_branches`: `{"items": [{"branch": "main", "current": true}, ...], "truncated": {...}}`.
+- `cexp_list_tags`: `{"items": ["v1.1.0", "v1.0.0", ...], "truncated": {...}}`.
+- `cexp_list_commits`: `{"items": [{"hash": "a1b2c3d", "subject": "..."}, ...], "truncated": {...}}`.
+- `cexp_search_text` / `cexp_search_symbol`: `{"items": [{"path": "...", "line": 42, "text": "..."}, ...], "truncated": {...}}`.
+- `cexp_read_file`: raw file content (or the requested range), no added headers; a
   trailing marker when truncated.
-- `show_commit` / `compare_commits`: raw `git show` / `git diff` output (or the
+- `cexp_show_commit` / `cexp_compare_commits`: raw `git show` / `git diff` output (or the
   `--stat` summary when `stat=True`), with a trailing marker when truncated.
 
 Truncation must never break the JSON: if the serialized output exceeds
@@ -710,12 +717,12 @@ cause: <optional, concise extracted reason (e.g. trimmed git stderr, exit code)>
 
 | Operation | Default timeout |
 |---|---|
-| `clone_repo` | 600 s |
-| `fetch_repo` | 120 s |
-| `pull_repo` | 120 s |
-| `list_files`, `search_text`, `search_symbol` | 30 s |
-| `read_file` | 10 s |
-| `list_branches`, `list_tags`, `list_commits`, `show_commit`, `compare_commits` | 30 s |
+| `cexp_clone_repo` | 600 s |
+| `cexp_fetch_repo` | 120 s |
+| `cexp_pull_repo` | 120 s |
+| `cexp_list_files`, `cexp_search_text`, `cexp_search_symbol` | 30 s |
+| `cexp_read_file` | 10 s |
+| `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits` | 30 s |
 
 On timeout, return `Error: timed out after Ns`. These are implementation defaults;
 they may be exposed later as admin Valves if needed.
@@ -762,7 +769,7 @@ class Tools:
         max_lines: int = Field(200, description="Cap on output lines.")
         max_bytes: int = Field(20480, description="Hard byte cap on output.")
 
-    async def clone_repo(self, repo: str, ref: Optional[str] = None) -> str:
+    async def cexp_clone_repo(self, repo: str, ref: Optional[str] = None) -> str:
         """
         Clone a repository into the storage area.
 
@@ -870,18 +877,18 @@ intentionally not captured or surfaced: they are noise to the model.
 ## 10. Open Questions / Decisions Pending
 
 Decisions made (recorded for the record):
-- `compare_commits` uses the **three-dot** (`...`, merge-base) diff by default —
+- `cexp_compare_commits` uses the **three-dot** (`...`, merge-base) diff by default —
   for "what changed between X and Y" this shows changes on `ref_b` since its
   divergence from `ref_a`. A two-dot (`..`) option may be added later if needed.
-- `clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
+- `cexp_clone_repo` `ref="release"` resolves to the latest release tag (§7 Phase 1).
 - Structured tool results are returned as **JSON** (a single indented object,
   UTF-8, always valid) so the agent gets named fields and structured truncation
-  metadata instead of ad-hoc text. Content/diff tools (`read_file`,
-  `show_commit`, `compare_commits`) keep raw text: JSON-escaping code and
+  metadata instead of ad-hoc text. Content/diff tools (`cexp_read_file`,
+  `cexp_show_commit`, `cexp_compare_commits`) keep raw text: JSON-escaping code and
   diffs hurts readability. Errors keep the `Error:`/`Not found:`/`Timed out:`
   prefix contract (stable, parseable, instantly recognizable) rather than
   being JSON-encoded.
-- `read_file` reads with native Python I/O (open/read in `asyncio.to_thread`)
+- `cexp_read_file` reads with native Python I/O (open/read in `asyncio.to_thread`)
   instead of `cat`/`sed` subprocesses: it does not widen the subprocess
   allow-list. Binary detection scans the WHOLE file with an incremental UTF-8
   decoder (a null byte or failed strict decode anywhere rejects the file) -
@@ -892,12 +899,12 @@ Decisions made (recorded for the record):
   5000 lines are streamed (only the shown lines are read); files larger than
   50 MB are rejected.
 - After the JSON migration (§10), the `max_lines` Valve applies only to
-  line-based text output: `read_file` and the Phase 3 diff tools
-  (`show_commit`, `compare_commits`) plus `pull_repo`'s raw fallback.
+  line-based text output: `cexp_read_file` and the Phase 3 diff tools
+  (`cexp_show_commit`, `cexp_compare_commits`) plus `cexp_pull_repo`'s raw fallback.
   Structured JSON tools are capped by `max_results` (item count) and
   `max_bytes` (via `json_output`). This is by design, not a lost valve.
 - **fd/ripgrep are NOT used.** The Files & Search tools are pure Python:
-  `list_files` walks with `os.walk` and honors `.gitignore` via the `pathspec`
+  `cexp_list_files` walks with `os.walk` and honors `.gitignore` via the `pathspec`
   package (the same engine fd/ripgrep use; `pathspec` 1.x names it
   "gitignore", older 0.x "gitwildmatch" — both supported), with a stdlib-only
   fallback that skips `.git`/`.hg`/`.svn` and the common ignore patterns but
@@ -905,14 +912,14 @@ Decisions made (recorded for the record):
   honored** (git semantics): every `.gitignore` under the repo root is read
   and its patterns are prefixed with the subdir path so they apply relative
   to that subdir; negations (`!pattern`) keep the `!` at the front
-  (`!sub/keep.gen`, never `sub/!keep.gen`). `search_text` uses the `regex`
+  (`!sub/keep.gen`, never `sub/!keep.gen`). `cexp_search_text` uses the `regex`
   package (matching ripgrep's backtracking syntax) when available, else
   stdlib `re`; matches are returned as `{path, line, text, context}` items
   parsed from the file content in Python. This makes the tools runnable in
   environments that only have git + Python, which is the deployment target
-  (§9.1). Performance is adequate for code repos: list_files ~16 ms and
-  search_text ~50 ms on ~2000 files (measured).
-- **`search_symbol` uses a curated definition pattern**, not ctags/tree-sitter:
+  (§9.1). Performance is adequate for code repos: cexp_list_files ~16 ms and
+  cexp_search_text ~50 ms on ~2000 files (measured).
+- **`cexp_search_symbol` uses a curated definition pattern**, not ctags/tree-sitter:
   a case-sensitive regex that matches a leading definition keyword (`def`,
   `class`, `fn`, `func`, `function`, `type`, `struct`, `enum`, `trait`,
   `impl`, `interface`, `module`, `sub`, `procedure`, `macro`, `const`, `var`,
@@ -927,25 +934,25 @@ Decisions made (recorded for the record):
   a bug where `async def` definitions were silently missed (the keyword was
   anchored directly after `^\s*`, so any modifier broke the match) was fixed
   and covered by regression tests.
-- `list_branches` normalizes `git branch -a` output: remote-tracking refs are
+- `cexp_list_branches` normalizes `git branch -a` output: remote-tracking refs are
   shown as `origin/<name>` (stripping the `remotes/` prefix) and the detached
   HEAD pseudo-entry `(HEAD detached at ...)` is skipped.
-- `list_tags` uses `--sort=-version:refname` (semver-aware, newest first)
+- `cexp_list_tags` uses `--sort=-version:refname` (semver-aware, newest first)
   instead of `--sort=-creatordate`: the latter is unreliable when tags share
   a timestamp and leaves ties in alphabetical order.
-- `show_commit` runs `git show <commit>` (full diff, matching §7), not
-  `--stat`; the diff is capped by `max_lines`/`max_bytes`. `compare_commits`
+- `cexp_show_commit` runs `git show <commit>` (full diff, matching §7), not
+  `--stat`; the diff is capped by `max_lines`/`max_bytes`. `cexp_compare_commits`
   uses the three-dot `ref_a...ref_b` diff by default and `--stat` when
   `stat=True` (§7).
-- `list_commits` validates the `path` argument with `resolve_path` (path
+- `cexp_list_commits` validates the `path` argument with `resolve_path` (path
   traversal protection) before passing it to `git log -- <path>`.
-- Content/diff tools (`read_file`, `show_commit`, `compare_commits`) return
+- Content/diff tools (`cexp_read_file`, `cexp_show_commit`, `cexp_compare_commits`) return
   **raw text by design**, never fenced markdown: the tool output is data for
   the model to process, truncation would break an open fence, content may
   contain triple backticks, and concatenated ranges would duplicate fences.
   Code-excerpt presentation (fenced blocks with language tags) is the
   MODEL's responsibility, guided by the system prompt
-  (`META_MODEL_PROMPT.md`) and a usage note in the `read_file` description.
+  (`META_MODEL_PROMPT.md`) and a usage note in the `cexp_read_file` description.
 - The `path` parameters of the Files & Search tools explicitly warn the model
   NOT to include the `<owner>/<name>` prefix (it belongs in `repo`) and give
   `"/"`-separated examples (e.g. `"src/main.py"`). Rationale: an agent using
@@ -962,18 +969,26 @@ Decisions made (recorded for the record):
   is a security property (a model attached only to Files & Search cannot
   clone/write). The combined script is for operators who accept giving every
   capability in exchange for a one-paste deploy.
+- All public tool names are prefixed `cexp_` (§6): `cexp_read_file`,
+  `cexp_list_files`, etc. Private helpers keep their names (`_read_file`,
+  `_clone_repo`, ...). The rename is names-only (no logic or docstring
+  changes); user-facing strings that reference other tools were updated
+  too, so the model is never told to call a stale name. Rationale: the
+  generic names could collide with third-party tools in shared instances; a
+  prefix removes the practical risk, and Open WebUI's first-wins fallback
+  (tool_id prefix) remains as a backstop.
 - After a `git clone`, only the default branch exists locally; other branches
-  are `origin/<name>` until fetched/checked out (relevant for `list_branches`
+  are `origin/<name>` until fetched/checked out (relevant for `cexp_list_branches`
   and the meta model's expectations).
-- `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
+- `cexp_list_branches` and `cexp_list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
-  `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at
-  them. `list_tags` sorts newest-first by version (`--sort=-version:refname`)
+  `cexp_list_commits`/`cexp_show_commit`/`cexp_compare_commits` or `cexp_clone_repo(ref=...)` at
+  them. `cexp_list_tags` sorts newest-first by version (`--sort=-version:refname`)
   so the `max_results` cap shows the most recent releases first.
-- `clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
+- `cexp_clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
   when `url` is omitted; `url` overrides the remote, never the target directory
   (which always comes from the validated `repo`).
-- On `git clone` failure, `clone_repo` best-effort removes the partial clone
+- On `git clone` failure, `cexp_clone_repo` best-effort removes the partial clone
   directory it just created (only when it is not a valid git repo). Without
   this, a failed clone would permanently block that `<owner>/<name>`. This is
   the only non-git write, and it is confined to `<repos_path>`.
@@ -990,8 +1005,8 @@ Still open:
 - [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
 - [ ] Default cap values: propose `max_results=50`, `max_lines=200`,
       `max_bytes=20480`; adjust after real-world testing.
-- [ ] Whether `fetch_repo` should also resolve `ref="release"` (currently only
-      `clone_repo` does).
+- [ ] Whether `cexp_fetch_repo` should also resolve `ref="release"` (currently only
+      `cexp_clone_repo` does).
 
 ---
 

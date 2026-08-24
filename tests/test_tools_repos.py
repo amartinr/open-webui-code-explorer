@@ -76,14 +76,14 @@ def src_url(source: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# clone_repo
+# cexp_clone_repo
 # ---------------------------------------------------------------------------
 
 
 class TestCloneRepo:
     async def test_clone_basic(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("testowner/testrepo", url=src_url(source_repo))
+        out = await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
 
         result = parse_json(out)
         assert result["repo"] == "testowner/testrepo"
@@ -98,12 +98,12 @@ class TestCloneRepo:
 
     async def test_clone_existing_fails_without_overwrite(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("testowner/testrepo", url=src_url(source_repo))
+        await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
         root = repos_path / "testowner" / "testrepo"
         marker = root / "keep.txt"
         marker.write_text("do not delete")
 
-        out = await tools.clone_repo("testowner/testrepo", url=src_url(source_repo))
+        out = await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
 
         assert "already exists" in out
         assert out.startswith("Error:")
@@ -115,7 +115,7 @@ class TestCloneRepo:
         await commit_file(source_repo, "dev.txt", "dev\n", "dev work")
 
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("testowner/testrepo", url=src_url(source_repo), ref="dev")
+        out = await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo), ref="dev")
 
         assert parse_json(out)["ref"] == "dev"
         root = repos_path / "testowner" / "testrepo"
@@ -125,7 +125,7 @@ class TestCloneRepo:
 
     async def test_clone_ref_release_resolves_highest_semver(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo(
+        out = await tools.cexp_clone_repo(
             "testowner/testrepo", url=src_url(source_repo), ref="release"
         )
 
@@ -140,7 +140,7 @@ class TestCloneRepo:
 
     async def test_clone_ref_release_no_tags(self, repos_path, source_repo_no_tags):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo(
+        out = await tools.cexp_clone_repo(
             "testowner/testrepo", url=src_url(source_repo_no_tags), ref="release"
         )
         assert out.startswith("Error:")
@@ -156,24 +156,24 @@ class TestCloneRepo:
         monkeypatch.setenv("GIT_COMMITTER_DATE", "2024-06-15T00:00:00Z")
         await run_git(src, "tag", "-a", "beta", "-m", "beta")
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("o/r", url=src_url(src), ref="release")
+        out = await tools.cexp_clone_repo("o/r", url=src_url(src), ref="release")
         assert parse_json(out)["ref"] == "beta (release tag)"
 
     async def test_clone_release_prefers_semver_over_newer_non_semver(self, repos_path, tmp_path):
         src = await init_source_repo(tmp_path / "src")  # v1.0.0, v1.1.0
         await run_git(src, "tag", "zzz")  # newest by date, but not semver
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("o/r", url=src_url(src), ref="release")
+        out = await tools.cexp_clone_repo("o/r", url=src_url(src), ref="release")
         assert parse_json(out)["ref"] == "v1.1.0 (release tag)"
 
     async def test_clone_release_rejects_bad_ref(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("o/r", url=src_url(source_repo), ref="release")
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo), ref="release")
         assert not out.startswith("Error:")  # success is JSON now
 
     async def test_clone_bad_ref_fails_cleanly(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo(
+        out = await tools.cexp_clone_repo(
             "testowner/testrepo", url=src_url(source_repo), ref="nonexistent-ref"
         )
         assert out.startswith("Error:")
@@ -182,33 +182,33 @@ class TestCloneRepo:
     async def test_repo_traversal_rejected(self, repos_path, source_repo):
         tools = make_tools(repos_path)
         for bad in ["../evil", "a/../b", "a/b/c", "repo"]:
-            out = await tools.clone_repo(bad, url=src_url(source_repo))
+            out = await tools.cexp_clone_repo(bad, url=src_url(source_repo))
             assert out.startswith("Error:"), bad
             assert not (repos_path / "evil").exists()
 
     async def test_invalid_url_rejected(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("o/r", url="-o")
+        out = await tools.cexp_clone_repo("o/r", url="-o")
         assert out.startswith("Error:")
         assert "invalid clone url" in out
 
     async def test_failed_clone_cleans_partial_dir(self, repos_path, tmp_path):
         # A clone from a nonexistent remote must fail and leave no junk behind.
         tools = make_tools(repos_path)
-        out = await tools.clone_repo("o/r", url=src_url(tmp_path / "does-not-exist"))
+        out = await tools.cexp_clone_repo("o/r", url=src_url(tmp_path / "does-not-exist"))
         assert out.startswith("Error:")
         assert not (repos_path / "o" / "r").exists()
 
 
 # ---------------------------------------------------------------------------
-# fetch_repo
+# cexp_fetch_repo
 # ---------------------------------------------------------------------------
 
 
 class TestFetchRepo:
     async def test_fetch_updates_refs_without_touching_worktree(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         root = repos_path / "o" / "r"
 
         # Source advances: new commit + new tag.
@@ -217,7 +217,7 @@ class TestFetchRepo:
         head_before = (await run_git(root, "rev-parse", "HEAD")).stdout.strip()
         content_before = (root / "hello.txt").read_text()
 
-        out = await tools.fetch_repo("o/r")
+        out = await tools.cexp_fetch_repo("o/r")
 
         result = parse_json(out)
         assert result["repo"] == "o/r"
@@ -236,32 +236,32 @@ class TestFetchRepo:
 
     async def test_fetch_up_to_date(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
-        out = await tools.fetch_repo("o/r")
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_fetch_repo("o/r")
         result = parse_json(out)
         assert result["up_to_date"] is True
         assert result["items"] == []
 
     async def test_fetch_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.fetch_repo("o/r")
+        out = await tools.cexp_fetch_repo("o/r")
         assert out.startswith("Not found:")
         assert "not cloned yet" in out
 
 
 # ---------------------------------------------------------------------------
-# pull_repo
+# cexp_pull_repo
 # ---------------------------------------------------------------------------
 
 
 class TestPullRepo:
     async def test_pull_fast_forwards(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         root = repos_path / "o" / "r"
 
         await commit_file(source_repo, "late.txt", "late\n", "late work")
-        out = await tools.pull_repo("o/r")
+        out = await tools.cexp_pull_repo("o/r")
 
         result = parse_json(out)
         assert result["result"] == "fast_forwarded"
@@ -274,21 +274,21 @@ class TestPullRepo:
 
     async def test_pull_already_up_to_date(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
-        out = await tools.pull_repo("o/r")
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_pull_repo("o/r")
         assert parse_json(out)["result"] == "up_to_date"
 
     async def test_pull_detached_head_fails_cleanly(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo), ref="v1.0.0")
-        out = await tools.pull_repo("o/r")
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo), ref="v1.0.0")
+        out = await tools.cexp_pull_repo("o/r")
         assert out.startswith("Error:")
         assert "detached HEAD" in out
-        assert "fetch_repo" in out
+        assert "cexp_fetch_repo" in out
 
     async def test_pull_diverged_fails_without_merge(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         root = repos_path / "o" / "r"
 
         # Local commit diverges...
@@ -296,7 +296,7 @@ class TestPullRepo:
         # ...while the source also advances.
         await commit_file(source_repo, "late.txt", "late\n", "late work")
 
-        out = await tools.pull_repo("o/r")
+        out = await tools.cexp_pull_repo("o/r")
 
         assert out.startswith("Error:")
         assert "cause:" in out
@@ -313,12 +313,12 @@ class TestPullRepo:
 
     async def test_pull_not_cloned(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.pull_repo("o/r")
+        out = await tools.cexp_pull_repo("o/r")
         assert out.startswith("Not found:")
 
 
 # ---------------------------------------------------------------------------
-# list_repos
+# cexp_list_repos
 # ---------------------------------------------------------------------------
 
 
@@ -326,10 +326,10 @@ class TestListRepos:
     async def test_lists_clones_with_branch(self, repos_path, source_repo, tmp_path):
         src2 = await init_source_repo(tmp_path / "src2")
         tools = make_tools(repos_path)
-        await tools.clone_repo("owner1/repo1", url=src_url(source_repo))
-        await tools.clone_repo("owner2/repo2", url=src_url(src2))
+        await tools.cexp_clone_repo("owner1/repo1", url=src_url(source_repo))
+        await tools.cexp_clone_repo("owner2/repo2", url=src_url(src2))
 
-        out = await tools.list_repos()
+        out = await tools.cexp_list_repos()
 
         result = parse_json(out)
         by_repo = {item["repo"]: item["branch"] for item in result["items"]}
@@ -338,25 +338,25 @@ class TestListRepos:
 
     async def test_detached_clone_shows_commit(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo), ref="v1.0.0")
-        out = await tools.list_repos()
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo), ref="v1.0.0")
+        out = await tools.cexp_list_repos()
         result = parse_json(out)
         assert result["items"][0]["repo"] == "o/r"
         assert result["items"][0]["branch"] != "main"  # detached -> short hash
 
     async def test_empty_reports_not_found(self, repos_path):
         tools = make_tools(repos_path)
-        out = await tools.list_repos()
+        out = await tools.cexp_list_repos()
         assert out.startswith("Not found:")
         assert "nothing cloned yet" in out
 
     async def test_ignores_non_git_dirs(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         (repos_path / "o" / "not-a-repo").mkdir(parents=True)
         (repos_path / "not-a-repo").mkdir(parents=True)
         (repos_path / "o" / "r" / "sub").mkdir()  # nested dirs are not repos
-        out = await tools.list_repos()
+        out = await tools.cexp_list_repos()
         result = parse_json(out)
         repos = {item["repo"] for item in result["items"]}
         assert "o/r" in repos
@@ -366,9 +366,9 @@ class TestListRepos:
         tools = make_tools(repos_path)
         for i in range(5):
             src = await init_source_repo(tmp_path / f"src{i}")
-            await tools.clone_repo(f"owner/repo{i}", url=src_url(src))
+            await tools.cexp_clone_repo(f"owner/repo{i}", url=src_url(src))
         tools.valves.max_results = 2
-        out = await tools.list_repos()
+        out = await tools.cexp_list_repos()
         result = parse_json(out)
         assert len(result["items"]) == 2
         assert result["truncated"] == {"shown": 2, "total": 5}
@@ -417,7 +417,7 @@ class TestOpenWebUILoading:
             and not func.startswith("_")  # noqa: SIM102
             and not inspect.isclass(getattr(tools, func))
         ]
-        assert sorted(discovered) == ["clone_repo", "fetch_repo", "list_repos", "pull_repo"]
+        assert sorted(discovered) == ["cexp_clone_repo", "cexp_fetch_repo", "cexp_list_repos", "cexp_pull_repo"]
         for name in discovered:
             assert asyncio.iscoroutinefunction(getattr(tools, name))
             assert getattr(tools, name).__doc__
@@ -446,7 +446,7 @@ class TestOpenWebUILoading:
         exec(compile(dist_file.read_text(encoding="utf-8"), dist_file.name, "exec"), module.__dict__)
         tools = module.Tools()
 
-        for name in ["clone_repo", "fetch_repo", "pull_repo", "list_repos"]:
+        for name in ["cexp_clone_repo", "cexp_fetch_repo", "cexp_pull_repo", "cexp_list_repos"]:
             func = getattr(tools, name)
             doc = func.__doc__ or ""
             sig_params = set(inspect.signature(func).parameters)
@@ -472,7 +472,7 @@ class TestConfigPrecedence:
         env_repos = tmp_path / "envrepos"
         monkeypatch.setenv("OWUI_REPOS_PATH", str(env_repos))
         tools = Tools()  # valves.repos_path == "" -> env
-        out = await tools.clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         assert parse_json(out)["repo"] == "o/r"
         assert (env_repos / "o" / "r").exists()
 
@@ -482,12 +482,12 @@ class TestConfigPrecedence:
         monkeypatch.setenv("OWUI_REPOS_PATH", str(env_repos))
         tools = Tools()
         tools.valves.repos_path = str(valve_repos)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         assert (valve_repos / "o" / "r").exists()
         assert not (env_repos / "o" / "r").exists()
 
     async def test_list_repos_uses_valve(self, repos_path, source_repo):
         tools = make_tools(repos_path)
-        await tools.clone_repo("o/r", url=src_url(source_repo))
-        out = await tools.list_repos()
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_list_repos()
         assert parse_json(out)["items"][0]["repo"] == "o/r"

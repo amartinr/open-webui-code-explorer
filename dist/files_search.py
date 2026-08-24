@@ -54,7 +54,7 @@ TIMEOUT_READ = 10
 TIMEOUT_SEARCH = 30
 TIMEOUT_COMMIT = 30
 
-# read_file safety limits: files larger than MAX_READ_BYTES are rejected;
+# cexp_read_file safety limits: files larger than MAX_READ_BYTES are rejected;
 # ranges larger than MAX_INLINE_LINES are streamed (only the shown lines are
 # read) instead of being read fully into memory.
 MAX_READ_BYTES = 50 * 1024 * 1024
@@ -350,7 +350,7 @@ def _line_is_binary(line: str) -> bool:
 
 
 def _is_binary_path(p: Path) -> bool:
-    """Binary check on a path, used by search_text (scans many files)."""
+    """Binary check on a path, used by cexp_search_text (scans many files)."""
     return _is_binary(_read_binary_sample(p))
 
 
@@ -561,7 +561,7 @@ def parse_filter(filter_str: Optional[str]) -> tuple:
 def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     """True iff `relpath` matches the include/exclude glob sets.
 
-    Used for the single-file case of list_files (fd-style semantics: globs are
+    Used for the single-file case of cexp_list_files (fd-style semantics: globs are
     matched against the full relative path).
     """
     if excludes and any(fnmatch.fnmatch(relpath, g) for g in excludes):
@@ -733,10 +733,10 @@ class Tools:
         )
 
     # ------------------------------------------------------------------
-    # list_files
+    # cexp_list_files
     # ------------------------------------------------------------------
 
-    async def list_files(
+    async def cexp_list_files(
         self,
         repo: str,
         path: Optional[str] = None,
@@ -809,10 +809,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # read_file
+    # cexp_read_file
     # ------------------------------------------------------------------
 
-    async def read_file(
+    async def cexp_read_file(
         self,
         repo: str,
         path: str,
@@ -821,7 +821,7 @@ class Tools:
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
-        Use to inspect file contents. Example: read_file("owner/repo",
+        Use to inspect file contents. Example: cexp_read_file("owner/repo",
         "src/main.py"). Accepts an optional 1-based start/end line range.
         Returns raw text (no line numbers, no headers); a trailing marker is
         appended when output is truncated. Binary and non-UTF-8 files are
@@ -906,10 +906,10 @@ class Tools:
         return result
 
     # ------------------------------------------------------------------
-    # search_text
+    # cexp_search_text
     # ------------------------------------------------------------------
 
-    async def search_text(
+    async def cexp_search_text(
         self,
         repo: str,
         query: str,
@@ -971,10 +971,10 @@ class Tools:
         return json_output(data, self.valves.max_bytes)
 
     # ------------------------------------------------------------------
-    # search_symbol
+    # cexp_search_symbol
     # ------------------------------------------------------------------
 
-    async def search_symbol(
+    async def cexp_search_symbol(
         self,
         repo: str,
         query: str,
@@ -1058,7 +1058,7 @@ class Tools:
 
     def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
         """Yield (rel_path, Path) for every text file under `base` that passes
-        the .gitignore and filter globs. Shared by search_text/search_symbol."""
+        the .gitignore and filter globs. Shared by cexp_search_text/cexp_search_symbol."""
         spec = _load_ignore_spec(root)
         if base.is_file():
             rel_f = _try_decode_rel(base, root)
@@ -1103,6 +1103,6 @@ class Tools:
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
             raise ToolError(
-                f"repository not cloned yet: {repo} (use clone_repo first)",
+                f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
             )
