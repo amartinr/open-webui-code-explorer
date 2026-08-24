@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Code Explorer icon: a magnifying glass over code brackets -->
+  <rect width="32" height="32" rx="6" fill="#0f172a"/>
+  <text x="6" y="20" font-family="monospace" font-size="13" fill="#38bdf8">&lt;/&gt;</text>
+  <circle cx="22" cy="11" r="6" fill="none" stroke="#e2e8f0" stroke-width="2.5"/>
+  <line x1="26.5" y1="15.5" x2="30" y2="19" stroke="#e2e8f0" stroke-width="3" stroke-linecap="round"/>
+</svg>
