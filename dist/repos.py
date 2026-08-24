@@ -713,7 +713,8 @@ class Tools:
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
         nothing is modified - use fetch_repo, pull_repo, or list_repos instead.
-        After cloning, the requested ref is checked out.
+        After cloning, the requested ref is checked out. Returns a JSON object
+        with repo, path, default_branch, ref, and status.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).
         :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git.
@@ -833,7 +834,8 @@ class Tools:
 
         Use to bring newly published branches/tags into an existing clone
         without touching the working tree (safe on a detached HEAD). Does not
-        merge or move any local branch.
+        merge or move any local branch. Returns a JSON object with repo,
+        up_to_date, and items (refs with their change).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         """
@@ -896,7 +898,8 @@ class Tools:
         Use to keep a moving branch (e.g. dev) up to date. Only fast-forward
         updates are allowed: never creates a merge commit, never leaves the
         repo conflicted. Fails cleanly on a detached HEAD (use fetch_repo
-        there) and when the local branch has diverged.
+        there) and when the local branch has diverged. Returns a JSON object
+        with repo and result (up_to_date or fast_forwarded).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         """
@@ -951,7 +954,8 @@ class Tools:
         """List all cloned repositories under the storage area.
 
         Use to see what is already cloned (owner/name and current branch)
-        before deciding whether to clone, fetch, or pull. No parameters.
+        before deciding whether to clone, fetch, or pull. Returns a JSON
+        object with an items array of {"repo", "branch"} entries. No parameters.
 
         :return: a JSON object with an `items` array of {"repo", "branch"} entries, sorted.
         """

@@ -45,7 +45,8 @@ class Tools:
         list_commits, show_commit, or compare_commits at a branch name.
         Local branches by default; with remote=True, remote-tracking branches
         appear as origin/<name> (reflecting the last fetch, never the live
-        network state).
+        network state). Returns a JSON object with an items array of
+        {"branch", "current"} entries (current marks the checked-out branch).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param remote: Optional; if True, also include remote-tracking branches.
@@ -94,7 +95,8 @@ class Tools:
         """List tags of a repository, newest first.
 
         Use to see which release tags exist before clone_repo(ref=\"release\"),
-        compare_commits, or show_commit on a tag.
+        compare_commits, or show_commit on a tag. Returns a JSON object with
+        an items array of tag names.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         """
@@ -138,7 +140,8 @@ class Tools:
         Use to explore commit history. With no refs, shows the current HEAD
         history. With ref_a and ref_b, shows commits reachable from ref_b but
         not from ref_a (git's ref_a..ref_b range). Capable of narrowing to a
-        single file or directory.
+        single file or directory. Returns a JSON object with an items array
+        of {"hash", "subject"} entries (newest first).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: Optional start ref (branch, tag, or commit).
@@ -241,7 +244,8 @@ class Tools:
         Use to see what changed between two branches, tags, or commits. Uses
         the three-dot (merge-base) diff: shows changes on ref_b since its
         divergence from ref_a. With stat=True, returns the --stat summary
-        instead of the full diff. Returns raw git diff output, capped.
+        instead of the full diff. Returns raw git diff output, capped by the
+        max_lines/max_bytes Valves with a truncation marker.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: First ref (branch, tag, or commit) (required).

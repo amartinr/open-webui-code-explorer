@@ -713,10 +713,11 @@ class Tools:
     ) -> str:
         """List files and directories under a path in a repository.
 
-        Use to explore repository structure before reading files. Returns
-        paths relative to the repository root, sorted. Respects .gitignore
-        (via the pathspec package when available); hidden files are not shown
-        by default.
+        Use to explore repository structure before reading files. Returns a
+        JSON object with an items array of {"path", "kind"} entries, relative
+        to the repository root and sorted. Respects .gitignore (via the
+        pathspec package when available); hidden files are not shown by
+        default.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Optional subdirectory or file; defaults to the repository root.
@@ -787,8 +788,10 @@ class Tools:
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
-        Use to inspect file contents. Returns raw text (no line numbers, no
-        headers). Binary and non-UTF-8 files are rejected with a clear error.
+        Use to inspect file contents. Accepts an optional 1-based start/end
+        line range. Returns raw text (no line numbers, no headers); a
+        trailing marker is appended when output is truncated. Binary and
+        non-UTF-8 files are rejected with a clear error.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Path to the file, relative to the repository root (required).
@@ -943,8 +946,11 @@ class Tools:
         Use to locate where a symbol is DEFINED rather than mentioned. Searches
         with language-aware patterns for definitions (def/class/fn/func/type/
         struct/enum/impl/interface/module/const/var/let... plus top-level
-        `NAME =` assignments). Case-sensitive by default, since identifiers are
-        case-sensitive in virtually every language.
+        `NAME =` assignments). Returns a JSON object with an items array of
+        {"path", "line", "text"}. Case-sensitive by default, since
+        identifiers are case-sensitive in virtually every language. Heuristic,
+        not a full parser: expect occasional false positives/negatives on
+        exotic syntax.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Symbol name or partial (required).
