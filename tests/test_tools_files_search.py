@@ -422,3 +422,34 @@ class TestOpenWebUILoading:
         source = dist_file.read_text(encoding="utf-8")
         assert "import common" not in source
         assert "{{COMMON_CODE}}" not in source
+
+    async def test_works_without_fd_rg_binaries(self, tmp_path, monkeypatch):
+        """The whole point of the pure-Python implementation: the deployment
+        environment has no fd/rg binaries. Simulate it by making shutil.which
+        return None for them (git still needed for cloning)."""
+        import common as common_mod
+        import shutil
+
+        real_which = shutil.which
+
+        def fake_which(cmd):
+            if cmd in ("fd", "rg"):
+                return None
+            return real_which(cmd)
+
+        monkeypatch.setattr(common_mod.shutil, "which", fake_which)
+
+        src = tmp_path / "src"
+        await init_repo(src)
+        tools = await clone_source(tmp_path / "repos", src)
+
+        # list_files
+        result = parse_json(await tools.list_files("testowner/testrepo", filter="*.py"))
+        assert len(result["items"]) >= 1
+        # read_file
+        out = await tools.read_file("testowner/testrepo", "hello.py")
+        assert out == HELLO_PY
+        # search_text
+        result = parse_json(await tools.search_text("testowner/testrepo", "def "))
+        assert len(result["items"]) >= 1
+        assert result["items"][0]["text"].startswith("def ")

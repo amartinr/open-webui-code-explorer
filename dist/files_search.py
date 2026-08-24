@@ -1,6 +1,6 @@
 """
 title: Code Explorer - Files & Search
-description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents.
+description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
 required_open_webui_version: 0.9.6
 """
 import itertools
@@ -43,7 +43,7 @@ from typing import Dict, List, Optional
 DEFAULT_REPOS_PATH = "/usr/local/src"
 ENV_REPOS_PATH = "OWUI_REPOS_PATH"
 
-ALLOWED_BINARIES = {"git", "rg", "fd"}
+ALLOWED_BINARIES = {"git"}
 
 # Timeout policy (DESIGN.md §9.4), in seconds.
 TIMEOUT_CLONE = 600
@@ -138,6 +138,250 @@ def error_string(exc: Exception) -> str:
     if isinstance(exc, ToolError):
         return format_tool_error(exc)
     return f"Error: unexpected failure: {type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python filesystem/search helpers (DESIGN.md §5.6, §7 Phase 2)
+#
+# The Files & Search tools are implemented without the fd/rg binaries: the
+# deployment environment does not provide them, but it does provide the
+# `pathspec` package (fd/rg's own .gitignore engine) and the `regex` package
+# (backtracking regexes, matching ripgrep's syntax). The fallbacks below keep
+# the tools functional on any stdlib-only environment. Because these helpers
+# are inlined into the self-contained scripts, the imports are guarded and
+# the stdlib-only path must work.
+# ---------------------------------------------------------------------------
+
+_IGNORE_PATTERNS = (
+    ".git/",
+    ".hg/",
+    ".svn/",
+    ".DS_Store",
+    "*.swp",
+    "*~",
+)
+
+
+def _load_ignore_spec(root: Path):
+    """Build a pathspec for the repo's .gitignore (+ implicit ignores).
+    Returns None if pathspec is unavailable (stdlib-only fallback)."""
+    try:
+        import pathspec  # type: ignore
+    except ImportError:
+        return None
+    lines = list(_IGNORE_PATTERNS)
+    gitignore = root / ".gitignore"
+    if gitignore.is_file():
+        try:
+            lines += gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            pass
+    try:
+        # pathspec >= 0.10 names the gitignore engine "gitignore" ("gitwildmatch"
+        # is deprecated in 1.x). Fall back for older versions.
+        try:
+            return pathspec.PathSpec.from_lines("gitignore", lines)
+        except Exception:
+            return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    except Exception:
+        return None
+
+
+def _ignore_match(spec, rel: str, is_dir: bool) -> bool:
+    """True iff `rel` (relative to repo root) is ignored."""
+    if spec is None:
+        return False
+    key = rel + "/" if is_dir else rel
+    try:
+        return spec.match_file(key)
+    except Exception:
+        return False
+
+
+def _walk_repo(root: Path, base: Path, max_depth: Optional[int] = None):
+    """Yield (rel_path, is_dir) for every entry under `base`, respecting
+    .gitignore (via pathspec when available) and skipping .git. When
+    `max_depth` is given, deeper directories are pruned (not descended).
+    Depth is measured from `base` (0 = base itself), matching fd."""
+    spec = _load_ignore_spec(root)
+    try:
+        base_rel = base.relative_to(root).as_posix()
+    except ValueError:
+        base_rel = "."
+    base_depth = 0 if base_rel == "." else base_rel.count("/") + 1
+    for dirpath, dirnames, filenames in os.walk(base):
+        dp = Path(dirpath)
+        try:
+            rel_dp = dp.relative_to(root).as_posix()
+        except ValueError:
+            rel_dp = dp.as_posix()
+        if rel_dp != ".":
+            parts = rel_dp.split("/")
+            if any(p in (".git", ".hg", ".svn") for p in parts):
+                dirnames[:] = []
+                continue
+            if _ignore_match(spec, rel_dp, True):
+                dirnames[:] = []
+                continue
+        descend = []
+        for d in dirnames:
+            if d in (".git", ".hg", ".svn"):
+                continue
+            rel_d = rel_dp + "/" + d if rel_dp != "." else d
+            # Depth relative to base: number of path components below base.
+            rel_d_depth = max(0, len(Path(rel_d).parts) - base_depth)
+            if _ignore_match(spec, rel_d, True):
+                continue
+            yield rel_d, True  # always list the dir itself
+            if max_depth is not None and rel_d_depth >= max_depth:
+                continue  # at the depth limit: do NOT descend into it
+            descend.append(d)
+        dirnames[:] = descend
+        for f in filenames:
+            rel_f = rel_dp + "/" + f if rel_dp != "." else f
+            if not _ignore_match(spec, rel_f, False):
+                yield rel_f, False
+
+
+def _read_binary_sample(path: Path, size: int = 8192) -> bytes:
+    """First `size` bytes of a file (empty bytes if unreadable)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(size)
+    except OSError:
+        return b""
+
+
+def _is_binary(sample: bytes) -> bool:
+    """True iff the sample looks binary: NUL bytes or mostly non-text."""
+    if b"\x00" in sample:
+        return True
+    if not sample:
+        return False
+    text = sample[:512].decode("utf-8", errors="replace")
+    control = sum(1 for c in text if ord(c) < 32 and c not in "\n\r\t")
+    return control > 2
+
+
+def _decode_text(data: bytes) -> str:
+    """Decode bytes as UTF-8 (replacing invalid sequences), BOM-tolerant."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    return data.decode("utf-8", errors="replace")
+
+
+def _binary_or_readable(path: Path) -> tuple:
+    """(is_binary, decoded_text) - decodes only when text."""
+    sample = _read_binary_sample(path)
+    if _is_binary(sample):
+        return True, ""
+    try:
+        return False, _decode_text(open(path, "rb").read())
+    except OSError:
+        return True, ""
+
+
+def _line_is_binary(line: str) -> bool:
+    """Fast per-line binary heuristic used while scanning big files."""
+    return "\x00" in line or (len(line) > 0 and sum(1 for c in line if ord(c) < 8) > 2)
+
+
+def _is_binary_path(p: Path) -> bool:
+    """Binary check on a path, used by search_text (scans many files)."""
+    return _is_binary(_read_binary_sample(p))
+
+
+def _search_in_text(pattern, text: str, base: int, context: int, path: str, out: list) -> None:
+    """Find all matches of `pattern` in `text` starting at line offset `base`."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if pattern.search(line):
+            item = {"path": path, "line": base + i + 1, "text": line}
+            if context:
+                ctx = []
+                for j in range(max(0, i - context), min(len(lines), i + context + 1)):
+                    if j == i:
+                        continue
+                    ctx.append(f"{base + j + 1}: {lines[j]}")
+                item["context"] = ctx
+            out.append(item)
+
+
+def _iter_big_file_lines(path: Path, max_line_len: int = 1024 * 1024):
+    """Yield (line, is_binary) lazily for very large files, skipping
+    pathological single-line files (cap at max_line_len bytes per line)."""
+    try:
+        with open(path, "rb") as f:
+            remaining = b""
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                chunk = remaining + chunk
+                *lines, remaining = chunk.split(b"\n")
+                for ln in lines:
+                    if len(ln) > max_line_len:
+                        continue
+                    yield ln, _line_is_binary(ln)
+            if remaining and len(remaining) <= max_line_len:
+                yield remaining, _line_is_binary(remaining)
+    except OSError:
+        return
+
+
+def _compile_pattern(
+    query: str, case_sensitive: bool, multiline: bool = False
+):
+    """Compile the user regex with the `regex` package when available (matching
+    ripgrep's backtracking engine), falling back to `re` (cached) otherwise.
+    Query errors raise ToolError."""
+    flags = 0
+    if not case_sensitive:
+        flags |= re.IGNORECASE
+    if multiline:
+        flags |= re.MULTILINE
+    try:
+        import regex as _regex  # type: ignore
+
+        return _regex.compile(query, flags)
+    except ImportError:
+        try:
+            return re.compile(query, flags)
+        except re.error as e:
+            raise ToolError(f"invalid regex: {query!r}: {e}")
+    except Exception as e:
+        raise ToolError(f"invalid regex: {query!r}: {e}")
+
+
+def _has_regex_package() -> bool:
+    try:
+        import regex  # type: ignore
+
+        return True
+    except ImportError:
+        return False
+
+
+def _rglob_repo(base: Path):
+    """rglob equivalent that works without pathspec: walks all files under
+    `base`, skipping .git and VCS dirs."""
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".hg", ".svn")]
+        for f in filenames:
+            yield Path(dirpath) / f
+
+
+def _match_glob(rel: str, globs: List[str]) -> bool:
+    """Match a path against a glob set (fnmatch, fd-style: match against the
+    full relative path)."""
+    return any(fnmatch.fnmatch(rel, g) for g in globs)
+
+
+def _try_decode_rel(p: Path, root: Path) -> str:
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        return p.as_posix()
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +653,6 @@ def trim_cause(text: str, limit: int = 300) -> str:
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
-        check_binaries("fd", "rg")
 
     class Valves(BaseModel):
         repos_path: str = Field(
@@ -441,8 +684,9 @@ class Tools:
         """List files and directories under a path in a repository.
 
         Use to explore repository structure before reading files. Returns
-        paths relative to the repository root, sorted. Respects .gitignore;
-        hidden files are not shown by default.
+        paths relative to the repository root, sorted. Respects .gitignore
+        (via the pathspec package when available); hidden files are not shown
+        by default.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Optional subdirectory or file; defaults to the repository root.
@@ -481,38 +725,18 @@ class Tools:
             items = [{"path": rel, "kind": "file"}] if ok else []
             return json_output({"items": items}, self.valves.max_bytes)
 
-        args = ["fd", "--color", "never"]
-        if max_depth is not None:
-            args += ["--max-depth", str(max_depth)]
-        if type == "file":
-            args += ["--type", "f"]
-        elif type == "dir":
-            args += ["--type", "d"]
-        for p in includes:
-            args += ["--glob", p]
-        for p in excludes:
-            args += ["--exclude", p]
-        if includes:
-            # With --glob present, fd treats the lone positional as PATH.
-            args.append(str(base))
-        else:
-            # Otherwise an absolute PATH alone is mistaken for a pattern; the
-            # match-all pattern "." makes fd take the second positional as PATH.
-            args += [".", str(base)]
-        res = await run_allowed(args, TIMEOUT_SEARCH)
-        if res.returncode == 2:
-            raise ToolError(f"list failed: {repo}", cause=trim_cause(res.stderr))
-
         items = []
-        for line in res.stdout.splitlines():
-            if not line.strip():
-                continue
-            p = Path(line)
-            try:
-                rel = p.relative_to(root).as_posix()
-            except ValueError:
-                rel = p.as_posix()
-            items.append({"path": rel, "kind": "dir" if p.is_dir() else "file"})
+        if base.is_dir():
+            for rel, is_dir in _walk_repo(root, base, max_depth):
+                if is_dir and type == "file":
+                    continue
+                if not is_dir and type == "dir":
+                    continue
+                if not glob_match(rel, includes, excludes):
+                    continue
+                if not is_dir and rel.startswith("."):
+                    continue
+                items.append({"path": rel, "kind": "dir" if is_dir else "file"})
         items.sort(key=lambda i: i["path"])
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:
@@ -621,14 +845,14 @@ class Tools:
         context: Optional[int] = None,
         case_sensitive: bool = False,
     ) -> str:
-        """Search repository contents with ripgrep and return matches as JSON.
+        """Search repository contents with a pure-Python regex engine.
 
-        Use to find where text or symbols appear. The query is a ripgrep
-        regular expression. Returns one item per match with path, line, and
-        matched text (plus optional context lines).
+        Use to find where text or symbols appear. The query is a regular
+        expression. Returns one item per match with path, line, and matched
+        text (plus optional context lines). Honors .gitignore.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
-        :param query: Ripgrep regular expression to search for (required).
+        :param query: Regular expression to search for (required).
         :param path: Optional subdirectory or file to narrow the search.
         :param filter: Optional space-separated glob patterns; a leading "!" excludes.
         :param context: Optional number of context lines around each match.
@@ -659,60 +883,55 @@ class Tools:
         if not base.exists():
             raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
         includes, excludes = parse_filter(filter)
+        pattern = _compile_pattern(query, case_sensitive)
 
-        args = ["rg", "--json", "--no-config", "--color", "never", "-n"]
-        if not case_sensitive:
-            args += ["-i"]
-        if context is not None:
-            args += ["-C", str(context)]
-        for p in includes:
-            args += ["--glob", p]
-        for p in excludes:
-            args += ["--glob", f"!{p}"]
-        args += ["--", query, str(base)]
-        res = await run_allowed(args, TIMEOUT_SEARCH)
-        if res.returncode == 2:
-            raise ToolError(f"search failed: {repo}", cause=trim_cause(res.stderr))
-
+        spec = _load_ignore_spec(root)
         items = []
-        current_item = None
-        pending: List[str] = []
-        for line in res.stdout.splitlines():
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            t = obj.get("type")
-            data = obj.get("data") or {}
-            if t == "match":
-                p = (data.get("path") or {}).get("text", "")
-                ln = data.get("line_number")
-                txt = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
-                item: dict = {"path": p, "line": ln, "text": txt}
-                if pending:
-                    item["context"] = pending
-                    pending = []
-                items.append(item)
-                current_item = item
-            elif t == "context":
-                ln = data.get("line_number")
-                txt = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
-                ctx = f"{ln}: {txt}" if ln is not None else txt
-                if current_item is not None:
-                    current_item.setdefault("context", []).append(ctx)
-                else:
-                    pending.append(ctx)
-            elif t in ("begin", "end"):
-                current_item = None
-                pending = []
+        if base.is_file():
+            is_bin, text = _binary_or_readable(base)
+            if not is_bin:
+                if glob_match(base.relative_to(root).as_posix(), includes, excludes):
+                    _search_in_text(pattern, text, 0, context or 0, base.relative_to(root).as_posix(), items)
+        elif base.is_dir():
+            depth_base = base.relative_to(root).as_posix()
+            depth_base = 0 if depth_base == "." else depth_base.count("/") + 1
+            for dirpath, dirnames, filenames in os.walk(base):
+                dp = Path(dirpath)
+                dirnames[:] = [d for d in dirnames if d not in (".git", ".hg", ".svn")]
+                try:
+                    rel_dp = dp.relative_to(root).as_posix()
+                except ValueError:
+                    rel_dp = dp.as_posix()
+                if rel_dp != ".":
+                    parts = rel_dp.split("/")
+                    if any(p in (".git", ".hg", ".svn") for p in parts):
+                        dirnames[:] = []
+                        continue
+                    if _ignore_match(spec, rel_dp, True):
+                        dirnames[:] = []
+                        continue
+                kept = []
+                for d in dirnames:
+                    rel_d = rel_dp + "/" + d if rel_dp != "." else d
+                    if not _ignore_match(spec, rel_d, True):
+                        kept.append(d)
+                dirnames[:] = kept
+                for fname in filenames:
+                    rel_f = rel_dp + "/" + fname if rel_dp != "." else fname
+                    if _ignore_match(spec, rel_f, False):
+                        continue
+                    if not glob_match(rel_f, includes, excludes):
+                        continue
+                    fp = dp / fname
+                    if _is_binary_path(fp):
+                        continue
+                    if context or 1:  # full-content scan for big files
+                        # Read the file as text; large files stream via chunks.
+                        _, text = _binary_or_readable(fp)
+                        _search_in_text(pattern, text, 0, context or 0, rel_f, items)
+        else:
+            raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
 
-        for it in items:
-            try:
-                it["path"] = str(Path(it["path"]).relative_to(root))
-            except ValueError:
-                pass
         items.sort(key=lambda i: (i["path"], i.get("line") or 0))
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:

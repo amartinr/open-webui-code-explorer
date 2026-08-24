@@ -21,9 +21,11 @@ is no `import common` at runtime.
 ## Requirements
 
 - Python 3.10+ (build + tests).
-- Binaries on `PATH` (checked at tool load time, error surfaced at call time):
-  `git` (>= 2.39), `rg` (ripgrep), `fd`. Phase 1 uses only `git`; Phase 2
-  uses `fd` and `rg`.
+- `git` (>= 2.39) on `PATH` (checked at tool load time, error surfaced at
+  call time). **`fd` and `rg` are NOT required**: listing, reading, and
+  searching are pure-Python, using `pathspec` (for `.gitignore`) and `regex`
+  (for searches) when those packages are present, and falling back to the
+  standard library otherwise.
 
 ## Build
 
@@ -63,10 +65,11 @@ actual write permission is still granted by the mounted volume.
 
 ## Security model (summary)
 
-- **Allow-listed subprocesses only**: `git`, `rg`, `fd`, invoked with argument
-  arrays (`shell=False`), in a fixed headless environment
+- **Allow-listed subprocesses only**: `git` only, invoked with argument arrays
+  (`shell=False`), in a fixed headless environment
   (`GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_GLOBAL=/dev/null`, `LC_ALL=C`, …) so
-  git can never prompt, page, localize, or read user/global config.
+  git can never prompt, page, localize, or read user/global config. File
+  listing/reading/searching is pure Python (no `fd`/`rg` binaries needed).
 - **Read-only for code**: only `clone_repo` / `fetch_repo` / `pull_repo` write,
   and only inside `<repos_path>` and only via `git`.
 - **Path sanitization**: `repo` must be `<owner>/<name>` with components

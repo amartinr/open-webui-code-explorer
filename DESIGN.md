@@ -62,7 +62,7 @@ This is distinct from the documentation side, which is handled separately
 │  └──────────────┘     results/observations└────────┬────────┘  │
 │                                                    │            │
 │                                        allow-listed subprocesses│
-│                                        (git, rg, fd, cat/sed)   │
+│                                        (git only)               │
 │                                                    │            │
 │  ┌──────────────────┐   (optional)   ┌─────────────▼─────────┐  │
 │  │ Knowledge Base    │◀──────────────▶│ Repo storage            │  │
@@ -81,8 +81,10 @@ sees the tools. Therefore every safeguard lives inside the tools themselves.
 These rules are non-negotiable and MUST be enforced by every tool.
 
 1. **Allow-listed subprocesses only.** No shell execution with user-controlled
-   strings. Each tool invokes a fixed set of binaries (`git`, `rg`, `fd`) using
-   argument arrays (no `shell=True`).
+   strings. Each tool invokes a fixed set of binaries (`git` only) using
+   argument arrays (no `shell=True`). Filesystem listing, reading, and
+   searching are implemented in pure Python (pathspec for `.gitignore`),
+   so the deployment environment does NOT need fd/ripgrep.
 2. **Read-only for code.** No tool may create, modify, or delete files inside
    repositories. Exception: the `clone_repo`, `fetch_repo`, and `pull_repo`
    tools may write *only* into `<repos_path>`, and only via `git`.
@@ -96,7 +98,7 @@ These rules are non-negotiable and MUST be enforced by every tool.
    `clone_repo`, `fetch_repo`, and `pull_repo` tools may talk to remotes, and
    only through `git` (clone/fetch/pull).
 6. **No execution of code.** Nothing is run, imported, or evaluated. Tools only
-   read bytes and run Git/ripgrep/fd.
+   read bytes and run Git.
 
 ---
 
@@ -219,7 +221,7 @@ async def run_allowed(argv: list[str], timeout: int) -> CommandResult
 #   text=True, timeout=timeout, env=<headless env, §9.7>). Offload to a worker
 #   thread so the blocking call does not stall Open WebUI's event loop (backend
 #   is fully async since 0.9.0). argv[0] MUST be one of the allow-listed binaries
-#   {"git", "rg", "fd"}. Returns CommandResult(stdout, stderr, returncode) so
+#   {"git"}. Returns CommandResult(stdout, stderr, returncode) so
 #   tools capture BOTH pipes as data. TimeoutExpired → ToolError("timed out after Ns").
 ```
 
@@ -247,9 +249,10 @@ All tools share these conventions. Implement them consistently.
   - `filter` → see below.
 - **`filter` parameter:** named `filter` for model readability, but its value is a
   **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
-  space-separated patterns; a leading `!` marks an exclusion. Mapping:
-  - `rg` (search): include → `--glob P`, exclude → `--glob '!P'`.
-  - `fd` (list): include → `--glob P`, exclude → `--exclude P`.
+  space-separated patterns; a leading `!` marks an exclusion. Applied with
+  Python's `fnmatch` (fd/ripgrep-style: matched against the full relative path):
+  - search: include → keep, exclude → drop.
+  - list: include → keep, exclude → drop.
   Used by `list_files`, `search_text`, and `search_symbol`.
 - **Parameter style:** snake_case. Required vs. optional is stated per schema.
 - **`repo` scoping:** every tool (except `list_repos`) REQUIRES a `repo`
@@ -273,8 +276,8 @@ All tools share these conventions. Implement them consistently.
   marker-terminated). On failure it returns a structured error string of the
   form `Error: <summary>` with an optional `cause:` line (§9.3) — never a
   raised exception, never a raw traceback, never an uninterpreted stream dump.
-- **Determinism:** prefer stable ordering (e.g., `rg --sort path`, `fd`
-  default order, `git log` default order).
+- **Determinism:** prefer stable ordering (e.g., items sorted in Python by
+  path, `git log` default order).
 
 ---
 
@@ -363,11 +366,11 @@ list_repos()
 
 ---
 
-### Phase 2 — Reading & searching: `list_files`, `read_file`, `search_text`
+### Phase 2 - Reading & searching: `list_files`, `read_file`, `search_text`
 
 > Goal: give the model the ability to navigate structure, read files, and find
-> code/text. These map to `fd` (find), direct read (`cat`/`sed -n`), and `rg`
-> (ripgrep).
+> code/text. Pure-Python implementation: no `fd`/`rg` binaries required
+> (pathspec for `.gitignore`, `regex` for searches, stdlib fallbacks).
 
 #### `list_files`
 
@@ -381,8 +384,11 @@ list_files(
 )
 ```
 
-- Uses `fd` with `--max-depth`, `--type`, glob patterns (from `filter`). Returns
-  relative paths, sorted, capped by the `max_results` Valve.
+- Walks the repo with Python's `os.walk`, honoring `.gitignore` (via
+  `pathspec` when available) and skipping `.git`/VCS dirs; returns relative
+  paths (sorted), each with `{"path", "kind"}`, honoring `max_depth` (dirs at
+  the depth limit are listed but not descended), `type`, and `filter` globs.
+  Capped by the `max_results` Valve.
 
 #### `read_file`
 
@@ -395,9 +401,10 @@ read_file(
 )
 ```
 
-- Direct file read (or `sed -n 'start,endp'`). Binary files MUST be detected and
-  rejected with a clear message. Output capped by the `max_lines`/`max_bytes`
-  Valves.
+- Native Python I/O (open/read in `asyncio.to_thread`), no `cat`/`sed`
+  subprocess. Binary files MUST be detected (null byte in an 8 KB sample or
+  failed strict UTF-8 decode) and rejected with a clear message. Output capped
+  by the `max_lines`/`max_bytes` Valves.
 
 #### `search_text`
 
@@ -412,10 +419,10 @@ search_text(
 )
 ```
 
-- Runs `rg -n --sort path [--context N] [--glob <filter>] [--case-sensitive] <query> <path>`.
+- Pure-Python regex search over the repo's text files (the `regex` package
+  when available, else stdlib `re`), honoring `.gitignore`, `path` narrowing,
+  and `filter` globs. Returns JSON items `{"path", "line", "text", "context"}`.
 - Capped by the `max_results` Valve.
-- Never pass raw query via shell; use argument array. Escaping is handled by
-  subprocess args.
 
 ---
 
@@ -603,9 +610,11 @@ Each phase is "done" only when all its criteria pass.
   functions, not a `Tools` class) and the community site `openwebui.com` for
   importable user tools. Note: the `open-webui/tools` GitHub repo referenced in
   earlier drafts does not exist.
-- **Required binaries** (must be in `PATH`): `git` (>= 2.39), `rg` (ripgrep), `fd`.
-  Each script SHOULD check for them at startup and log a clear error if missing.
-  All subprocess calls use the resolved absolute path of the binary.
+- **Required binaries**: only `git` (>= 2.39). `fd`/ripgrep are NOT required:
+  listing, reading, and searching are pure-Python (pathspec for `.gitignore`;
+  the `regex` package when available, falling back to stdlib `re`). The
+  script checks for the binaries it actually uses and logs a clear warning if
+  missing; all subprocess calls use the resolved absolute path.
 
 ### 9.2 File structure (proposed)
 
@@ -867,18 +876,16 @@ Decisions made (recorded for the record):
   (`show_commit`, `compare_commits`) plus `pull_repo`'s raw fallback.
   Structured JSON tools are capped by `max_results` (item count) and
   `max_bytes` (via `json_output`). This is by design, not a lost valve.
-- `search_text` uses `rg --json` and parses the match/context/begin/end
-  messages: robust against paths containing `:` or spaces. Matches are sorted
-  in Python by (path, line) instead of relying on `--sort` (compatibility
-  with older ripgrep). Case-insensitive by default via `-i` (ripgrep is
-  case-sensitive by default, so the documented `case_sensitive=False` default
-  requires it).
-- `list_files` sorts items in Python instead of fd's `--sort` (same
-  compatibility reason). fd 10 interprets a single absolute PATH argument as
-  a PATTERN and errors out; the tool passes the match-all pattern `.` (no
-  filter) or relies on `--glob` (with filter) so fd takes the path as PATH.
-  fd's defaults are kept: `.gitignore` is respected and hidden files are not
-  shown (documented in the tool description).
+- **fd/ripgrep are NOT used.** The Files & Search tools are pure Python:
+  `list_files` walks with `os.walk` and honors `.gitignore` via the `pathspec`
+  package (the same engine fd/ripgrep use; `pathspec` 1.x names it
+  "gitignore", older 0.x "gitwildmatch" — both supported), with a stdlib-only
+  fallback that skips `.git`/`.hg`/`.svn` and the common ignore patterns but
+  cannot honor the repo's `.gitignore`. `search_text` uses the `regex` package
+  (matching ripgrep's backtracking syntax) when available, else stdlib `re`;
+  matches are returned as `{path, line, text, context}` items parsed from the
+  file content in Python. This makes the tools runnable in environments that
+  only have git + Python, which is the deployment target (§9.1).
 - `list_branches` and `list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
   `list_commits`/`show_commit`/`compare_commits` or `clone_repo(ref=...)` at
