@@ -1104,6 +1104,7 @@ class Tools:
         max_depth: Optional[int] = None,
         filter: Optional[str] = None,
         type: Optional[str] = "all",
+        ref: Optional[str] = None,
     ) -> str:
         """List files and directories under a path in a repository.
 
@@ -1111,16 +1112,20 @@ class Tools:
         JSON object with an items array of {"path", "kind"} entries, relative
         to the repository root and sorted. Respects .gitignore (via the
         pathspec package when available); hidden files are not shown by
-        default.
+        default. With ref, lists the files present at that branch/tag/commit
+        from the local git object store (no working-tree changes, no network);
+        directories are implied from file paths since git tracks no empty
+        directories.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Optional subdirectory or file, relative to the repository root; do NOT include the "<owner>/<name>" prefix (that belongs in `repo`); always use "/" as separator (e.g. "src/main.py"); defaults to the repository root.
+        :param ref: Optional git ref (branch, tag, or commit hash) to list files at; None (default) lists the working tree. Only plain refs are accepted; revision expressions like HEAD~1 are rejected.
         :param max_depth: Optional maximum directory depth (0 = only the given path).
         :param filter: Optional space-separated glob patterns; a leading "!" excludes (e.g. "*.py !*.md").
         :param type: "file", "dir", or "all" (default "all").
         """
         try:
-            return await self._list_files(repo, path, max_depth, filter, type)
+            return await self._list_files(repo, path, max_depth, filter, type, ref)
         except Exception as e:
             return error_string(e)
 
@@ -1131,10 +1136,15 @@ class Tools:
         max_depth: Optional[int],
         filter: Optional[str],
         type: Optional[str],
+        ref: Optional[str],
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
         self._ensure_repo_exists(root, repo)
+        if ref is not None:
+            # Ref listing reads the tree, not the working tree: the path is
+            # validated for traversal safety but need not exist on disk.
+            return await self._list_files_at_ref(root, repo, path, max_depth, filter, type, ref)
         base = resolve_path(repo, path, repos_path)
         if not base.exists():
             raise ToolError(f"path not found: {path or '.'} in {repo}", kind="not_found")
@@ -1162,6 +1172,108 @@ class Tools:
                 if not is_dir and rel.startswith("."):
                     continue
                 items.append({"path": rel, "kind": "dir" if is_dir else "file"})
+        items.sort(key=lambda i: i["path"])
+        data: dict = {"items": items}
+        if len(items) > self.valves.max_results:
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
+            data["items"] = items[: self.valves.max_results]
+        return json_output(data, self.valves.max_bytes)
+
+    async def _list_files_at_ref(
+        self,
+        root: Path,
+        repo: str,
+        path: Optional[str],
+        max_depth: Optional[int],
+        filter: Optional[str],
+        type: Optional[str],
+        ref: str,
+    ) -> str:
+        """List the files present at a git ref (branch/tag/commit) via
+        `git ls-tree -r --name-only`, without touching the working tree
+        (DESIGN.md §12.1). Directories are derived from file paths (git tracks
+        no empty directories), so type="dir" reflects implied directories.
+        filter/type/max_depth/max_results apply exactly like the working-tree
+        listing; an unknown ref is an Error naming the ref, a path absent at
+        the ref is a Not found."""
+        ref = validate_ref(ref)
+        repos_path = resolve_repos_path(self.valves.repos_path)
+        # Traversal-safety validation only; the path need not exist at the ref.
+        base = resolve_path(repo, path, repos_path)
+        if max_depth is not None and max_depth < 0:
+            raise ToolError(f"max_depth must be >= 0, got {max_depth}")
+        if type not in ("file", "dir", "all"):
+            raise ToolError(f"type must be 'file', 'dir', or 'all', got {type!r}")
+        includes, excludes = parse_filter(filter)
+
+        res = await run_allowed(
+            git_args("-C", str(root), "ls-tree", "-r", "--name-only", ref),
+            TIMEOUT_SEARCH,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"unknown ref: {ref!r}",
+                cause=trim_cause(res.stderr) or "ref does not exist in this repository",
+            )
+        files = [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+
+        # Narrow to the requested path (prefix semantics: a file matches
+        # exactly, a dir matches everything under it). A path with no entries
+        # at the ref is Not found.
+        base_rel = ""
+        if path:
+            try:
+                base_rel = base.relative_to(root).as_posix()
+            except ValueError:
+                raise ToolError(f"invalid path: {path!r}")
+            if base_rel == ".":
+                base_rel = ""
+            if base_rel:
+                files = [f for f in files if f == base_rel or f.startswith(base_rel + "/")]
+                if not files:
+                    raise ToolError(f"path not found at {ref}: {path}", kind="not_found")
+
+        base_parts = len(base_rel.split("/")) if base_rel else 0
+
+        def _depth(rel: str) -> int:
+            """Depth of an entry relative to the listing base (1 = direct
+            child), mirroring _walk_repo's base-relative depth."""
+            return len(rel.split("/")) - base_parts
+
+        def _kept_depth(d: int) -> bool:
+            """Working-tree semantics: entries at depth <= max_depth are
+            listed, and direct children of the base (depth 1) are always
+            listed (the walker yields them regardless of max_depth)."""
+            if max_depth is None:
+                return True
+            return d <= max_depth or d == 1
+
+        # Implied directories from ALL file paths (git tracks no empty dirs),
+        # from just under the base down to each file's parent.
+        dirs = set()
+        for f in files:
+            parts = f.split("/")
+            for i in range(base_parts + 1, len(parts)):
+                dirs.add("/".join(parts[:i]))
+
+        items = []
+        if type != "file":
+            for d in sorted(dirs):
+                if not _kept_depth(_depth(d)):
+                    continue
+                if not glob_match(d, includes, excludes):
+                    continue
+                items.append({"path": d, "kind": "dir"})
+        if type != "dir":
+            for f in sorted(files):
+                if f.startswith("."):
+                    continue  # hidden files are not shown, like the worktree
+                if not _kept_depth(_depth(f)):
+                    continue
+                if not glob_match(f, includes, excludes):
+                    continue
+                items.append({"path": f, "kind": "file"})
+
         items.sort(key=lambda i: i["path"])
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:

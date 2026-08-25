@@ -211,6 +211,116 @@ class TestListFiles:
 
 
 # ---------------------------------------------------------------------------
+# cexp_list_files at a ref (DESIGN.md §12.1)
+# ---------------------------------------------------------------------------
+
+
+class TestListFilesAtRef:
+    async def test_ref_defaults_to_working_tree_parity(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        no_ref = parse_json(await tools.cexp_list_files("testowner/testrepo"))
+        at_main = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        assert {i["path"]: i["kind"] for i in no_ref["items"]} == {
+            i["path"]: i["kind"] for i in at_main["items"]
+        }
+
+    async def test_lists_tree_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        by_path = {i["path"]: i["kind"] for i in result["items"]}
+        assert by_path["hello.py"] == "file"
+        assert by_path["world.md"] == "file"
+        assert by_path["sub"] == "dir"
+        assert by_path["sub/deep.py"] == "file"
+        assert by_path["data.bin"] == "file"
+        assert by_path["big.txt"] == "file"
+        assert "truncated" not in result
+
+    async def test_list_at_older_ref_excludes_newer_files(self, repos_path, source_repo):
+        """Tag the current state, then advance with a new file: the ref read
+        must see the snapshot, not the working tree."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        await run_git(clone, "tag", "v1.0.0")
+        (clone / "newfile.txt").write_text("new\n")
+        await run_git(clone, "add", "newfile.txt")
+        await run_git(clone, *IDENT, "commit", "-m", "add newfile")
+
+        old = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="v1.0.0"))
+        old_paths = {i["path"] for i in old["items"]}
+        assert "newfile.txt" not in old_paths
+        assert "hello.py" in old_paths
+
+        new = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        new_paths = {i["path"] for i in new["items"]}
+        assert "newfile.txt" in new_paths
+
+    async def test_path_narrowing_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", path="sub", ref="main"))
+        assert [i["path"] for i in result["items"]] == ["sub/deep.py"]
+
+    async def test_filter_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="*.py", ref="main"))
+        paths = [i["path"] for i in result["items"]]
+        assert "hello.py" in paths
+        assert "sub/deep.py" in paths
+        assert "world.md" not in paths
+        assert "data.bin" not in paths
+
+    async def test_type_dir_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", type="dir", ref="main"))
+        assert all(i["kind"] == "dir" for i in result["items"])
+        assert [i["path"] for i in result["items"]] == ["sub"]
+
+    async def test_max_depth_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", max_depth=1, ref="main"))
+        paths = {i["path"] for i in result["items"]}
+        assert "hello.py" in paths
+        assert "sub" in paths
+        assert "sub/deep.py" not in paths
+
+    async def test_path_not_found_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_list_files("testowner/testrepo", path="nope", ref="main")
+        assert out.startswith("Not found:")
+
+    async def test_unknown_ref_error_names_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_list_files("testowner/testrepo", ref="v9.9.9")
+        assert out.startswith("Error:")
+        assert "v9.9.9" in out
+
+    async def test_path_traversal_rejected_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        for bad in ["../evil", "..", "/etc"]:
+            out = await tools.cexp_list_files("testowner/testrepo", path=bad, ref="main")
+            assert out.startswith("Error:"), bad
+
+    async def test_malicious_refs_rejected_before_git(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        for bad in ["--all", "HEAD~1", "a..b", "main^"]:
+            out = await tools.cexp_list_files("testowner/testrepo", ref=bad)
+            assert out.startswith("Error:"), bad
+            assert "invalid ref" in out, bad
+
+    async def test_max_results_cap_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        tools.valves.max_results = 2
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        assert len(result["items"]) == 2
+        assert result["truncated"]["total"] >= 2
+
+    async def test_repo_not_cloned(self, repos_path):
+        tools = make_tools(repos_path)
+        out = await tools.cexp_list_files("o/r", ref="main")
+        assert out.startswith("Not found:")
+
+
+# ---------------------------------------------------------------------------
 # cexp_read_file
 # ---------------------------------------------------------------------------
 
