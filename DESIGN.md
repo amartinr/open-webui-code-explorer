@@ -223,10 +223,17 @@ async def run_allowed(argv: list[str], timeout: int) -> CommandResult
 #   is fully async since 0.9.0). argv[0] MUST be one of the allow-listed binaries
 #   {"git"}. Returns CommandResult(stdout, stderr, returncode) so
 #   tools capture BOTH pipes as data. TimeoutExpired → ToolError("timed out after Ns").
+
+def validate_ref(ref: str) -> str
+# Validate a git ref (branch, tag, or commit hash) before it is interpolated
+# into any git argument. Accept plain refs (including slash-containing branch
+# names); reject empty strings, leading dashes, ":", "..", whitespace, and
+# shell metacharacters (~ ^ * ? [ ] { } @ \). Raise ToolError naming the
+# offending ref. Deliberately rejects revision expressions (HEAD~1, main^).
 ```
 
 `ToolError` is a shared exception mapped to a user-facing message (never a raw
-traceback). All tools go through these helpers for repo/path resolution and
+traceback). All tools go through these helpers for repo/path/ref resolution and
 subprocess execution.
 
 The **capture-and-translate contract** is central to the design (§6, §9.3):
@@ -254,6 +261,11 @@ All tools share these conventions. Implement them consistently.
 - **Selector vocabulary** (one meaning per name, project-wide):
   - `type` → file-type filter in `cexp_list_files` (`file | dir | all`).
   - `filter` → see below.
+  - `ref` → a git ref (branch, tag, or commit hash) selecting which snapshot of
+    the repository to read; `None`/omitted means the working tree. Always
+    validated by `validate_ref` before reaching git.
+  - `context` → number of unified-context lines around a diff (maps to
+    `git diff -U N`).
 - **`filter` parameter:** named `filter` for model readability, but its value is a
   **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
   space-separated patterns; a leading `!` marks an exclusion. Applied with
@@ -265,6 +277,10 @@ All tools share these conventions. Implement them consistently.
 - **`repo` scoping:** every tool (except `cexp_list_repos`) REQUIRES a `repo`
   (`<owner>/<repo>`) parameter. Tools never operate over the entire
   `<repos_path>` blindly.
+- **Ref validation:** every parameter that accepts a git ref (branch, tag, or
+  commit hash) MUST be validated by the shared `validate_ref` helper before it
+  is interpolated into any git argument. No ref may reach git unvalidated; this
+  applies to both new and existing ref-accepting tools.
 - **Output caps are Valves, not parameters.** `max_results`, `max_lines`, and
   `max_bytes` are admin Valves (§5.5) and MUST NOT appear in tool schemas.
   Agent-facing parameters are limited to *semantic* inputs (paths, queries,
@@ -388,6 +404,7 @@ cexp_list_files(
   max_depth: int                  # optional
   filter:    str                  # optional (glob pattern, e.g. "*.py", "!*.md")
   type:      "file" | "dir" | "all"   # optional
+  ref:       str                  # optional: git ref (branch/tag/hash); None = working tree
 )
 ```
 
@@ -396,6 +413,11 @@ cexp_list_files(
   paths (sorted), each with `{"path", "kind"}`, honoring `max_depth` (dirs at
   the depth limit are listed but not descended), `type`, and `filter` globs.
   Capped by the `max_results` Valve.
+- When `ref` is given, the file list is produced from `git ls-tree -r
+  --name-only <ref>` (validated by `validate_ref`) instead of the working tree,
+  and the same `filter`/`type`/`max_depth`/cap logic is applied to the
+  resulting paths in Python. Directories are derived from file paths (git does
+  not track empty directories), so `type="dir"` reflects implied directories.
 
 #### `cexp_read_file`
 
@@ -405,13 +427,20 @@ cexp_read_file(
   path:  str      # required
   start: int      # optional (1-based line)
   end:   int      # optional (1-based line)
+  ref:   str      # optional: git ref (branch/tag/hash); None = working tree
 )
 ```
 
 - Native Python I/O (open/read in `asyncio.to_thread`), no `cat`/`sed`
-  subprocess. Binary files MUST be detected (null byte in an 8 KB sample or
+  subprocess. Binary files MUST be detected (null byte anywhere in the file or
   failed strict UTF-8 decode) and rejected with a clear message. Output capped
   by the `max_lines`/`max_bytes` Valves.
+- When `ref` is given, the content is read from the local object store
+  (`git cat-file blob <ref>:<path>`) without touching the working tree, and the
+  SAME binary/UTF-8 detection, line-range math, and truncation behaviour apply
+  as for the working-tree read. The `ref` is validated by `validate_ref`; a bad
+  ref is an `Error:` (cause naming the ref) while a path missing at that ref is
+  a `Not found:`.
 
 #### `cexp_search_text`
 
@@ -517,17 +546,23 @@ cexp_show_commit(
 
 ```
 cexp_compare_commits(
-  repo:  str      # required: "<owner>/<name>"
-  ref_a: str      # required (branch|tag|commit)
-  ref_b: str      # required (branch|tag|commit)
-  path:  str      # optional: narrow scope
-  stat:  bool     # optional: return --stat summary instead of full diff
+  repo:    str      # required: "<owner>/<name>"
+  ref_a:   str      # required (branch|tag|commit)
+  ref_b:   str      # required (branch|tag|commit)
+  path:    str      # optional: narrow scope
+  stat:    bool     # optional: return --stat summary instead of full diff
+  context: int      # optional: unified-context lines (-U N) around the diff
 )
 ```
 
-- `git diff ref_a...ref_b -- <path>` (three-dot / merge-base; the decided default,
-  see §10). A two-dot (`..`) variant is a possible future addition.
+- `git diff [-U N] ref_a...ref_b -- <path>` (three-dot / merge-base; the decided
+  default, see §10). A two-dot (`..`) variant is a possible future addition.
 - `stat=True` → `git diff --stat ref_a...ref_b -- <path>` for an overview.
+- `context=N` → `git diff -U N` (unified-context lines) for finer or coarser
+  surrounding context; the default is git's own (3 lines).
+- `path` narrows the diff to a single file/directory, so a whole-tree diff that
+  would truncate can be inspected file by file; `ref_a`/`ref_b` are validated
+  by `validate_ref`.
 - Capped by `max_lines`/`max_bytes`.
 
 ---
@@ -1000,6 +1035,30 @@ Decisions made (recorded for the record):
   in the error contract) / private (`_impl`, raises `ToolError`); private
   methods are excluded from tool discovery by `get_functions_from_tool`
   (underscore filter).
+- **Enhancement A (read-at-ref & large-diff) extends existing tools with
+  optional selector parameters instead of adding new tools.** `cexp_read_file`
+  and `cexp_list_files` gain an optional `ref` parameter (`None` = working
+  tree); `cexp_compare_commits` gains an optional `context` parameter (it
+  already had `path` and `stat`, which already close the "single-file diff"
+  gap). Rationale: `ref`/`context` are *selectors* (like `start`/`end`/`path`/
+  `filter`/`type`), not *dispatch* parameters, so they belong on the existing
+  tools under the §6 "one tool = one operation" rule; separate `_at_ref` tools
+  would duplicate the line-range/truncation/binary-detection logic and force
+  the model to learn redundant tool names. The change stays backward-compatible
+  (existing calls are unchanged) and additive.
+- **`validate_ref` is the single ref-validation helper** (shared, inline-safe,
+  unit-tested) and is applied to EVERY ref-accepting parameter, including the
+  existing ones (`cexp_clone_repo.ref`, `cexp_show_commit.commit`,
+  `cexp_list_commits.ref_a/ref_b`, `cexp_compare_commits.ref_a/ref_b`). This
+  closes pre-existing option-injection gaps (e.g. a `--help` commit string)
+  and prevents revision-range (`..`/`...`) or shell-metacharacter injection.
+  Revision expressions (`HEAD~1`, `main^`) are deliberately NOT supported:
+  only branch/tag/commit-hash refs are accepted.
+- **`run_allowed` is extended with a keyword-only `text: bool = True` flag**
+  rather than gaining a sibling function: `text=True` keeps the current
+  locale-decoded `str` output (all existing call sites unchanged); `text=False`
+  returns raw `bytes` for the read-at-ref path, which must preserve bytes for
+  binary/UTF-8 detection before decoding explicitly as UTF-8.
 
 Still open:
 - [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
@@ -1018,3 +1077,70 @@ Still open:
 4. Proceed to Phase 2, then 3, validating each before the next.
 5. When a phase reveals a flaw in this design, update this document in the same
    commit and note the rationale.
+
+---
+
+## 12. Post-1.0 Enhancements
+
+Two enhancements are planned beyond the initial five phases. They are
+independent of each other and can be implemented, reviewed, and released
+separately. Both follow the same build discipline (§9.2): edit the templates
+and `common.py`, regenerate `dist/`, and commit the regenerated output.
+
+### 12.1 Enhancement A — Read-at-Ref and Large-Diff Gaps
+
+**Status:** ready to implement (see `PLAN.md`).
+
+**Motivation.** Two field-observed limitations: (1) the file reader could only
+read the working tree, so inspecting a file at a released tag forced the model
+to fetch it over the network despite a local clone; (2) a whole-tree diff that
+truncated at the output caps left no way to page through a single heavily
+changed file.
+
+**Resolution.** Both are omissions, not security decisions, and are closed by
+*extending* existing tools with optional selector parameters (§10 decisions):
+
+- `cexp_read_file` gains `ref` (read a file as it exists at a branch/tag/commit,
+  from the local object store, with identical line-range/binary/truncation
+  behaviour; `None` = working tree).
+- `cexp_list_files` gains `ref` (list the files present at a ref via
+  `git ls-tree`).
+- `cexp_compare_commits` gains `context` (unified-context lines); its existing
+  `path` parameter already narrows a diff to a single file, closing the
+  large-diff gap.
+
+**New shared helper.** `validate_ref` (§5.6) validates any ref string before it
+reaches git and is applied to every ref-accepting tool (new and existing).
+
+**Security posture unchanged.** Only `git` is invoked (plus the `git cat-file` /
+`git ls-tree` plumbing, already within the binary allow-list). No new binaries,
+no subcommand allow-list in this phase, no execution, no network, no
+working-tree mutation for reads.
+
+**Acceptance criteria.**
+
+- `cexp_read_file("o/r", "src/x.py", ref="v1.0.0", start=10, end=20)` returns
+  the exact lines from that tag using only the local clone (no network, no
+  checkout change).
+- A previously-truncating whole-tree diff can be fully inspected via
+  `cexp_compare_commits(repo, ref_a, ref_b, path="the/file.py")` (with optional
+  `context`), and both sides read at their refs.
+- Forbidden refs are rejected with the standard error shape in every tool and
+  never reach git unvalidated.
+- Binary/non-UTF-8 blobs at refs are rejected exactly like their working-tree
+  counterparts.
+- Build regenerates `dist/`, the full suite is green, and docs reflect the new
+  surface.
+
+### 12.2 Enhancement B — Multi-Host Repository Support (deferred)
+
+**Status:** deferred; separate proposal, no hard ordering dependency on A.
+
+The repository identifier is redefined as `<host>/<owner>/<name>` (three
+components, mandatory, no backward-compat fallback); storage maps 1:1 to
+`<repos_path>/<host>/<owner>/<name>`; the default clone URL becomes
+`https://<host>/<owner>/<name>.git`. The host component is validated with a
+strict regex; a protocol allow-list (https/http/git/ssh) is added to the clone
+`url` override (closing the RCE gap where only a leading dash was rejected).
+`cexp_list_repos` returns `host`. See the separate proposal for full scope,
+tests, and order.

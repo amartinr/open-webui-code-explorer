@@ -443,7 +443,11 @@ def _try_decode_rel(p: Path, root: Path) -> str:
 
 @dataclass
 class CommandResult:
-    """Captured pipes of a finished subprocess. Both streams are DATA."""
+    """Captured pipes of a finished subprocess. Both streams are DATA.
+
+    With `run_allowed(text=True)` (default) `stdout`/`stderr` are `str`;
+    with `text=False` they are `bytes` (raw output, decoded by the caller).
+    """
 
     stdout: str
     stderr: str
@@ -458,7 +462,7 @@ def _headless_env() -> Dict[str, str]:
     return env
 
 
-async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
+async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> CommandResult:
     """Run an allow-listed binary with arguments, capturing both pipes.
 
     - argv[0] MUST be one of ALLOWED_BINARIES (no arbitrary commands).
@@ -468,6 +472,10 @@ async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
     - Uses the fixed headless environment (§9.7) so git can never prompt,
       page, localize, or read user/global config.
     - On timeout raises ToolError(kind="timed_out").
+    - `text=False` captures raw bytes (stdout/stderr are `bytes`) so callers
+      that need byte-exact output (e.g. blob reads for binary/UTF-8
+      detection) can decode explicitly; `text=True` (default) decodes with
+      the process locale and is only for human-facing git output.
     """
     if not argv:
         raise ToolError("empty command")
@@ -483,13 +491,15 @@ async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
             full,
             shell=False,
             capture_output=True,
-            text=True,
+            text=text,
             timeout=timeout,
             env=_headless_env(),
         )
     except subprocess.TimeoutExpired:
         raise ToolError(f"timed out after {timeout}s", kind="timed_out")
-    return CommandResult(stdout=proc.stdout or "", stderr=proc.stderr or "", returncode=proc.returncode)
+    stdout = proc.stdout or (b"" if not text else "")
+    stderr = proc.stderr or (b"" if not text else "")
+    return CommandResult(stdout=stdout, stderr=stderr, returncode=proc.returncode)
 
 
 def git_args(*args: str) -> List[str]:
