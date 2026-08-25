@@ -2,7 +2,7 @@
 title: Code Explorer - Repos
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.3
+version: 1.2.4
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Clone, fetch, pull, and list code repositories for the meta model. Read-only with respect to source code; writes happen only inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Constants (DESIGN.md §5.2, §9.4, §9.7)
@@ -577,6 +578,18 @@ async def run_allowed(
         raise ToolError(f"disallowed command: {argv[0]!r} (allow-list: {sorted(ALLOWED_BINARIES)})")
     exe = shutil.which(argv[0])
     if exe is None:
+        # Fail-closed environment event: git missing at runtime. Unlike the
+        # load-time check_binaries warning, this is emitted unconditionally
+        # (zero volume, high value, logger-only) - it has no per-instance
+        # Valve to opt out of, and a broken environment must leave a trace.
+        audit_event(
+            True,
+            logging.ERROR,
+            "git",
+            "",
+            "failed",
+            error=f"required binary not found in PATH: {argv[0]}",
+        )
         raise ToolError(f"required binary not found in PATH: {argv[0]}")
     full = [exe, *argv[1:]]
     env = _headless_env()
@@ -1001,6 +1014,44 @@ def trim_cause(text: str, limit: int = 300) -> str:
     return text
 
 
+def audit_event(
+    enabled: bool,
+    level: int,
+    action: str,
+    repo: str,
+    outcome: str,
+    detail: str = "",
+    error: str = "",
+) -> None:
+    """Emit an audit event to the "code_explorer" logger (S5).
+
+    Opt-in via the audit_log Valve (`enabled`): when off this is a complete
+    no-op (zero cost, zero logs). When on, logs one structured line with the
+    fields ts/level/action/repo/outcome/detail/error. NEVER writes to stdout:
+    the tool's stdout is what the model sees; the logger goes to the server
+    logs. `error` must be pre-trimmed by the caller (trim_cause); raw stderr
+    is never logged. ts is ISO-8601 UTC; level is the numeric logging level.
+    """
+    if not enabled:
+        return
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "action": action,
+        "repo": repo,
+        "outcome": outcome,
+        "detail": detail,
+        "error": error,
+    }
+    logger = logging.getLogger("code_explorer")
+    if level >= logging.ERROR:
+        logger.error("audit %s", json.dumps(event, ensure_ascii=False))
+    elif level >= logging.WARNING:
+        logger.warning("audit %s", json.dumps(event, ensure_ascii=False))
+    else:
+        logger.info("audit %s", json.dumps(event, ensure_ascii=False))
+
+
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
@@ -1023,6 +1074,10 @@ class Tools:
         )
         max_bytes: int = Field(
             20480, description="Hard byte cap on tool output (20 KB default)."
+        )
+        audit_log: bool = Field(
+            False,
+            description="Enable audit logging of repo operations and security rejections to the code_explorer logger (opt-in; off by default).",
         )
 
     # ------------------------------------------------------------------
@@ -1067,11 +1122,35 @@ class Tools:
         if ref is not None:
             # Validated BEFORE cloning so a bad ref never triggers an
             # (unnecessary) clone; the special value "release" also passes.
-            ref = validate_ref(ref)
+            try:
+                ref = validate_ref(ref)
+            except ToolError as e:
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"invalid ref: {ref!r}",
+                    error=str(e),
+                )
+                raise
         if url is not None:
             # Protocol allow-list + scp-like normalization BEFORE the clone so
             # a malicious URL never reaches git.
-            url = validate_clone_url(url)
+            try:
+                url = validate_clone_url(url)
+            except ToolError as e:
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"url rejected: {url!r}",
+                    error=str(e),
+                )
+                raise
             remote = url
         else:
             remote = f"https://github.com/{repo}.git"
@@ -1082,6 +1161,14 @@ class Tools:
         if allowed_hosts and allowed_hosts.strip():
             host = urlparse(remote).hostname or ""
             if not host_allowed(host, allowed_hosts):
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"host not allowed: {host or '(none)'!r}",
+                )
                 raise ToolError(
                     f"host not allowed: {host or '(none)'!r} (allowed_hosts: {allowed_hosts.strip()!r})",
                     cause="the allowed_hosts Valve restricts which origins cexp_clone_repo may clone from",
@@ -1090,10 +1177,26 @@ class Tools:
         if root.exists():
             existing = await _remote_origin(str(root))
             if existing and _normalize_remote(existing) == _normalize_remote(remote):
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"already exists, same origin: {existing}",
+                )
                 raise ToolError(
                     f"repo already exists: {repo} at {root} (cloned from {existing}, same origin)",
                     cause="use cexp_fetch_repo or cexp_pull_repo to update it (no destructive overwrite)",
                 )
+            audit_event(
+                self.valves.audit_log,
+                logging.WARNING,
+                "clone",
+                repo,
+                "blocked",
+                detail=f"namespace collision: existing {existing or 'unknown origin'} vs requested {remote}",
+            )
             raise ToolError(
                 f"repo already exists: {repo} at {root} (cloned from {existing or 'unknown origin'})",
                 cause=(
@@ -1104,17 +1207,60 @@ class Tools:
                 ),
             )
 
-        root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            root.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "failed",
+                error=f"cannot create storage directory: {e}",
+            )
+            raise ToolError(f"cannot create storage directory for {repo}", cause=str(e))
         try:
             res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
-        except asyncio.CancelledError:
-            # S4: a cancelled clone must not leave a partial directory
-            # blocking <owner>/<name>. Reuse the failed-clone cleanup, then
-            # re-raise so the cancellation keeps propagating.
+        except ToolError as e:
+            # Timeout (600 s): worse than fetch - left something half-done.
             self._cleanup_failed_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "timeout",
+                detail=remote,
+                error=str(e),
+            )
+            raise
+        except asyncio.CancelledError:
+            # S4+S5: a cancelled clone must not leave a partial directory
+            # blocking <owner>/<name>; the cancellation is the most valuable
+            # audit event (explains why a namespace is blocked). Reuse the
+            # failed-clone cleanup, then re-raise.
+            self._cleanup_failed_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "cancelled",
+                detail=remote,
+                error="clone cancelled while git was running",
+            )
             raise
         if res.returncode != 0:
             self._cleanup_failed_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "failed",
+                detail=remote,
+                error=trim_cause(res.stderr),
+            )
             raise ToolError(f"clone failed: {repo}", cause=trim_cause(res.stderr))
 
         resolved_ref = None
@@ -1122,6 +1268,14 @@ class Tools:
             if ref == "release":
                 tag = await self._resolve_release_tag(str(root))
                 if tag is None:
+                    audit_event(
+                        self.valves.audit_log,
+                        logging.WARNING,
+                        "clone",
+                        repo,
+                        "blocked",
+                        detail="ref='release' requested but the repo has no tags",
+                    )
                     raise ToolError(
                         f"ref='release' requested but {repo} has no tags; "
                         "clone without ref or specify a branch/tag explicitly"
@@ -1136,11 +1290,40 @@ class Tools:
                     git_args("-C", str(root), "-c", "advice.detachedHead=false", "checkout", "--quiet", ref_arg),
                     TIMEOUT_SEARCH,
                 )
-            except asyncio.CancelledError:
-                # S4: same cleanup for a cancelled post-clone checkout.
+            except ToolError as e:
                 self._cleanup_failed_clone(root)
+                audit_event(
+                    self.valves.audit_log,
+                    logging.ERROR,
+                    "clone",
+                    repo,
+                    "timeout",
+                    detail=f"checkout of {ref_arg!r}",
+                    error=str(e),
+                )
+                raise
+            except asyncio.CancelledError:
+                # S4+S5: same cleanup for a cancelled post-clone checkout.
+                self._cleanup_failed_clone(root)
+                audit_event(
+                    self.valves.audit_log,
+                    logging.ERROR,
+                    "clone",
+                    repo,
+                    "cancelled",
+                    detail=f"checkout of {ref_arg!r} cancelled",
+                )
                 raise
             if res.returncode != 0:
+                audit_event(
+                    self.valves.audit_log,
+                    logging.ERROR,
+                    "clone",
+                    repo,
+                    "failed",
+                    detail=f"checkout of {ref_arg!r} failed",
+                    error=trim_cause(res.stderr),
+                )
                 raise ToolError(
                     f"clone succeeded but checkout of ref {ref_arg!r} failed",
                     cause=trim_cause(res.stderr),
@@ -1148,6 +1331,14 @@ class Tools:
 
         default_branch = await self._default_branch(str(root))
         status = await self._short_status(str(root))
+        audit_event(
+            self.valves.audit_log,
+            logging.INFO,
+            "clone",
+            repo,
+            "success",
+            detail=remote,
+        )
         return json_output(
             {
                 "repo": repo,
@@ -1225,13 +1416,40 @@ class Tools:
         self._ensure_repo_exists(root, repo)
         await self._validate_origin(str(root), repo, "fetch")
         before = await self._list_refs(str(root))
-        res = await run_allowed(
-            git_args("-C", str(root), "fetch", "--all", "--tags", "--prune", "--no-progress"),
-            TIMEOUT_FETCH,
-        )
+        try:
+            res = await run_allowed(
+                git_args("-C", str(root), "fetch", "--all", "--tags", "--prune", "--no-progress"),
+                TIMEOUT_FETCH,
+            )
+        except ToolError as e:
+            # Timeout (120 s): non-destructive, retryable -> WARNING.
+            audit_event(
+                self.valves.audit_log,
+                logging.WARNING,
+                "fetch",
+                repo,
+                "timeout",
+                error=str(e),
+            )
+            raise
         if res.returncode != 0:
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "fetch",
+                repo,
+                "failed",
+                error=trim_cause(res.stderr),
+            )
             raise ToolError(f"fetch failed: {repo}", cause=trim_cause(res.stderr))
         after = await self._list_refs(str(root))
+        audit_event(
+            self.valves.audit_log,
+            logging.INFO,
+            "fetch",
+            repo,
+            "success",
+        )
 
         added = sorted(set(after) - set(before))
         updated = sorted(r for r in before if r in after and before[r] != after[r])
@@ -1301,24 +1519,62 @@ class Tools:
         res = await run_allowed(git_args("-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"), TIMEOUT_SEARCH)
         branch = res.stdout.strip()
         if branch == "HEAD":
+            audit_event(
+                self.valves.audit_log,
+                logging.WARNING,
+                "pull",
+                repo,
+                "blocked",
+                detail="detached HEAD; pull only moves branches",
+            )
             raise ToolError(
                 f"{repo} is on a detached HEAD; cexp_pull_repo only moves branches. "
                 "Use cexp_fetch_repo to update refs without touching the working tree."
             )
-        res = await run_allowed(
-            git_args("-C", str(root), "pull", "--ff-only", "--no-progress"),
-            TIMEOUT_PULL,
-        )
+        try:
+            res = await run_allowed(
+                git_args("-C", str(root), "pull", "--ff-only", "--no-progress"),
+                TIMEOUT_PULL,
+            )
+        except ToolError as e:
+            # Timeout (120 s): non-destructive, retryable -> WARNING.
+            audit_event(
+                self.valves.audit_log,
+                logging.WARNING,
+                "pull",
+                repo,
+                "timeout",
+                error=str(e),
+            )
+            raise
         if res.returncode != 0:
+            # Not fast-forwardable (diverged) or network error -> ERROR.
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "pull",
+                repo,
+                "failed",
+                error=trim_cause(res.stderr or res.stdout),
+            )
             raise ToolError(
                 f"pull failed (fast-forward only): {repo}",
                 cause=trim_cause(res.stderr or res.stdout),
             )
         out = (res.stdout + "\n" + res.stderr).strip()
         if "Already up to date" in out:
+            audit_event(self.valves.audit_log, logging.INFO, "pull", repo, "success", detail="up to date")
             return json_output({"repo": repo, "result": "up_to_date"}, self.valves.max_bytes)
         m = re.search(r"Updating\s+([0-9a-f]+)\.\.([0-9a-f]+)", out)
         if m:
+            audit_event(
+                self.valves.audit_log,
+                logging.INFO,
+                "pull",
+                repo,
+                "success",
+                detail=f"fast-forwarded {m.group(1)[:7]}..{m.group(2)[:7]}",
+            )
             return json_output(
                 {
                     "repo": repo,
@@ -1328,6 +1584,7 @@ class Tools:
                 },
                 self.valves.max_bytes,
             )
+        audit_event(self.valves.audit_log, logging.INFO, "pull", repo, "success")
         return json_output(
             {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes, hint="pull output was large; the repo is updated regardless")},
             self.valves.max_bytes,
@@ -1467,6 +1724,15 @@ class Tools:
         try:
             return validate_clone_url(origin)
         except ToolError as e:
+            audit_event(
+                self.valves.audit_log,
+                logging.WARNING,
+                action,
+                repo,
+                "blocked",
+                detail=f"origin not allow-listed: {origin or '(none)'!r}",
+                error=str(e),
+            )
             raise ToolError(
                 f"cannot {action}: remote origin is not allow-listed",
                 cause=f"origin {origin or '(none)'!r}: {e.message}",

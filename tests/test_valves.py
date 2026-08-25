@@ -26,6 +26,7 @@ REQUIRED_VALVES = {
     "max_results": (int, 50),
     "max_lines": (int, 200),
     "max_bytes": (int, 20480),
+    "audit_log": (bool, False),
 }
 
 # Which scripts exist and what max_results is capped on (per-script wording,

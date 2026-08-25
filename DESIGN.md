@@ -260,6 +260,14 @@ async def _remote_origin(root: str) -> str
 # The repo's remote origin URL (git -C <root> remote get-url origin), or ""
 # when there is no origin. Used by the clone-collision message and by
 # cexp_list_repos (new `origin` field).
+
+def audit_event(enabled: bool, level: int, action: str, repo: str, outcome: str,
+                detail: str = "", error: str = "") -> None
+# Opt-in audit trail (S5, §9.8): when `enabled` (the audit_log Valve) is False
+# this is a complete no-op. When True, logs one structured line to the
+# "code_explorer" logger (ts/level/action/repo/outcome/detail/error) — never
+# to stdout, never via print. `error` must be pre-trimmed by the caller via
+# trim_cause; raw stderr and file content are never logged.
 ```
 
 `ToolError` is a shared exception mapped to a user-facing message (never a raw
@@ -1040,6 +1048,61 @@ intentionally not captured or surfaced: they are noise to the model.
   otherwise prompt or pollute output.
 - Timeouts (§9.4) are the backstop: if a command somehow still blocks, it is
   killed and the tool returns `Timed out:` — it never hangs waiting for input.
+
+### 9.8 Audit trail (S5)
+
+The toolset is prevention without detection, so repo operations and security
+rejections now leave an optional trace. The audit is **opt-in** via the
+`audit_log: bool = False` Valve present on ALL four scripts (default off =
+complete no-op, zero cost). When on, events go to the existing
+`"code_explorer"` logger — NEVER to the tool's stdout (that is what the model
+sees) and never via `print`.
+
+Shared helper (inline-safe, in `common.py`): `audit_event(enabled, level,
+action, repo, outcome, detail="", error="")`. It formats one structured line
+with `ts` (ISO-8601 UTC), `level`, `action`, `repo`, `outcome`, `detail` and
+`error`. `error` is always pre-trimmed by the caller via `trim_cause`; raw
+stderr and code/file content are never logged; URLs already carry no
+credentials (`validate_clone_url` rejects them). The pure validators do NOT
+log themselves — the caller that decides a rejection is an audit event emits
+it, so logging stays centralized.
+
+Event levels and emission points:
+
+| Level | Event | Emission point |
+|---|---|---|
+| WARNING | fetch/pull rejected: origin not allow-listed (tampered `.git/config` indicator) | `_validate_origin` |
+| WARNING | clone rejected: URL scheme not allowed (`file://`, `ext::`, credentials) | `_clone_repo` |
+| WARNING | clone rejected: host outside `allowed_hosts` | `_clone_repo` |
+| WARNING | invalid ref rejected (revision expressions, options, `..`) | `_clone_repo` |
+| WARNING | namespace collision: "repo already exists" (same or different origin) | `_clone_repo` |
+| WARNING | `ref="release"` requested on a repo with no tags | `_clone_repo` |
+| WARNING | pull on detached HEAD or not fast-forwardable | `_pull_repo` |
+| WARNING | fetch/pull timeout (120 s) — non-destructive, retryable | `_fetch_repo` / `_pull_repo` |
+| ERROR | clone failed (network/auth/nonexistent repo) | `_clone_repo` |
+| ERROR | clone cancelled leaving a partial dir (explains a blocked namespace) | `_clone_repo` (`except CancelledError`) |
+| ERROR | checkout of the requested ref fails after the clone | `_clone_repo` |
+| ERROR | fetch failed (network, vanished remote) | `_fetch_repo` |
+| ERROR | pull failed (conflict, network) | `_pull_repo` |
+| ERROR | cannot create the storage directory (permissions) | `_clone_repo` |
+| ERROR | clone timeout (600 s) — left something half-done | `_clone_repo` |
+| ERROR | git missing at runtime (fail-closed, emitted unconditionally) | `run_allowed` |
+| INFO | successful clone/fetch/pull | `_clone_repo` / `_fetch_repo` / `_pull_repo` |
+
+NOT logged: reads and searches (`cexp_read_file`, `cexp_search_*`,
+`cexp_list_*`, `cexp_show_commit`, `cexp_compare_commits`) — read-only, high
+volume, already visible in the chat — and raw git stderr (only the trimmed
+summary).
+
+**CRITICAL (50) — deferred, not implemented.** Identified future events for
+broken security invariants / fail-open that should only occur from an
+internal bug or a tampered environment: a non-allow-listed binary passing
+validation, a URL that should have been rejected, a path that escaped the
+guard, or the storage root resolving outside the expected area. Deferred
+because they need fault-injection tests (simulating a bug in the code itself)
+and there is no current evidence a regression could pass unnoticed — the
+design is already fail-closed by construction. Implementing them without
+those tests would be decorative dead code.
 
 ---
 

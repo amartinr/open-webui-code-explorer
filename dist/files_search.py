@@ -2,7 +2,7 @@
 title: Code Explorer - Files & Search
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.3
+version: 1.2.4
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
 required_open_webui_version: 0.9.6
@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Constants (DESIGN.md §5.2, §9.4, §9.7)
@@ -579,6 +580,18 @@ async def run_allowed(
         raise ToolError(f"disallowed command: {argv[0]!r} (allow-list: {sorted(ALLOWED_BINARIES)})")
     exe = shutil.which(argv[0])
     if exe is None:
+        # Fail-closed environment event: git missing at runtime. Unlike the
+        # load-time check_binaries warning, this is emitted unconditionally
+        # (zero volume, high value, logger-only) - it has no per-instance
+        # Valve to opt out of, and a broken environment must leave a trace.
+        audit_event(
+            True,
+            logging.ERROR,
+            "git",
+            "",
+            "failed",
+            error=f"required binary not found in PATH: {argv[0]}",
+        )
         raise ToolError(f"required binary not found in PATH: {argv[0]}")
     full = [exe, *argv[1:]]
     env = _headless_env()
@@ -1003,6 +1016,44 @@ def trim_cause(text: str, limit: int = 300) -> str:
     return text
 
 
+def audit_event(
+    enabled: bool,
+    level: int,
+    action: str,
+    repo: str,
+    outcome: str,
+    detail: str = "",
+    error: str = "",
+) -> None:
+    """Emit an audit event to the "code_explorer" logger (S5).
+
+    Opt-in via the audit_log Valve (`enabled`): when off this is a complete
+    no-op (zero cost, zero logs). When on, logs one structured line with the
+    fields ts/level/action/repo/outcome/detail/error. NEVER writes to stdout:
+    the tool's stdout is what the model sees; the logger goes to the server
+    logs. `error` must be pre-trimmed by the caller (trim_cause); raw stderr
+    is never logged. ts is ISO-8601 UTC; level is the numeric logging level.
+    """
+    if not enabled:
+        return
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "action": action,
+        "repo": repo,
+        "outcome": outcome,
+        "detail": detail,
+        "error": error,
+    }
+    logger = logging.getLogger("code_explorer")
+    if level >= logging.ERROR:
+        logger.error("audit %s", json.dumps(event, ensure_ascii=False))
+    elif level >= logging.WARNING:
+        logger.warning("audit %s", json.dumps(event, ensure_ascii=False))
+    else:
+        logger.info("audit %s", json.dumps(event, ensure_ascii=False))
+
+
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
@@ -1020,6 +1071,10 @@ class Tools:
         )
         max_bytes: int = Field(
             20480, description="Hard byte cap on tool output (20 KB default)."
+        )
+        audit_log: bool = Field(
+            False,
+            description="Enable audit logging of repo operations and security rejections to the code_explorer logger (opt-in; off by default).",
         )
 
     # ------------------------------------------------------------------

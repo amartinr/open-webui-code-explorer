@@ -38,7 +38,7 @@ ALL_FRONTMATTER = '''"""
 title: Code Explorer - All
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.3
+version: 1.2.4
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: All Code Explorer tools in one script, prefixed cexp_: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -93,6 +93,7 @@ def build_combined(common_code: str, methods: List[Tuple[str, str]]) -> str:
         + "        max_results: int = Field(\n            50, description=\"Cap on item counts (files, matches, commits, branches, tags).\"\n        )\n"
         + "        max_lines: int = Field(\n            200, description=\"Cap on output lines. Whichever cap is hit first truncates.\"\n        )\n"
         + "        max_bytes: int = Field(\n            20480, description=\"Hard byte cap on tool output (20 KB default).\"\n        )\n"
+        + "        audit_log: bool = Field(\n            False,\n            description=\"Enable audit logging of repo operations and security rejections to the code_explorer logger (opt-in; off by default).\",\n        )\n"
         + "\n"
         + class_body
         + "\n"

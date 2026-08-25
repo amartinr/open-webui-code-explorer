@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Constants (DESIGN.md §5.2, §9.4, §9.7)
@@ -564,6 +565,18 @@ async def run_allowed(
         raise ToolError(f"disallowed command: {argv[0]!r} (allow-list: {sorted(ALLOWED_BINARIES)})")
     exe = shutil.which(argv[0])
     if exe is None:
+        # Fail-closed environment event: git missing at runtime. Unlike the
+        # load-time check_binaries warning, this is emitted unconditionally
+        # (zero volume, high value, logger-only) - it has no per-instance
+        # Valve to opt out of, and a broken environment must leave a trace.
+        audit_event(
+            True,
+            logging.ERROR,
+            "git",
+            "",
+            "failed",
+            error=f"required binary not found in PATH: {argv[0]}",
+        )
         raise ToolError(f"required binary not found in PATH: {argv[0]}")
     full = [exe, *argv[1:]]
     env = _headless_env()
@@ -986,3 +999,41 @@ def trim_cause(text: str, limit: int = 300) -> str:
     if len(text) > limit:
         text = text[:limit] + "..."
     return text
+
+
+def audit_event(
+    enabled: bool,
+    level: int,
+    action: str,
+    repo: str,
+    outcome: str,
+    detail: str = "",
+    error: str = "",
+) -> None:
+    """Emit an audit event to the "code_explorer" logger (S5).
+
+    Opt-in via the audit_log Valve (`enabled`): when off this is a complete
+    no-op (zero cost, zero logs). When on, logs one structured line with the
+    fields ts/level/action/repo/outcome/detail/error. NEVER writes to stdout:
+    the tool's stdout is what the model sees; the logger goes to the server
+    logs. `error` must be pre-trimmed by the caller (trim_cause); raw stderr
+    is never logged. ts is ISO-8601 UTC; level is the numeric logging level.
+    """
+    if not enabled:
+        return
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "action": action,
+        "repo": repo,
+        "outcome": outcome,
+        "detail": detail,
+        "error": error,
+    }
+    logger = logging.getLogger("code_explorer")
+    if level >= logging.ERROR:
+        logger.error("audit %s", json.dumps(event, ensure_ascii=False))
+    elif level >= logging.WARNING:
+        logger.warning("audit %s", json.dumps(event, ensure_ascii=False))
+    else:
+        logger.info("audit %s", json.dumps(event, ensure_ascii=False))

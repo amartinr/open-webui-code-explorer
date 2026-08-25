@@ -9,6 +9,7 @@ No network access is needed and the full surface is exercised end to end.
 import asyncio
 import inspect
 import json
+import logging
 import types
 import uuid
 from pathlib import Path
@@ -695,6 +696,84 @@ class TestRemoveRepo:
         assert out.startswith("Error:")
         assert "symlink" in out
         assert (repos_path / "real" / ".git").exists()
+
+
+class TestAuditLog:
+    """S5: with audit_log=True the repos tools emit structured audit events
+    to the code_explorer logger; with False they are silent."""
+
+    async def _audited_tools(self, repos_path, enabled=True):
+        tools = make_tools(repos_path)
+        tools.valves.audit_log = enabled
+        return tools
+
+    async def test_clone_success_emits_info(self, repos_path, source_repo, caplog):
+        tools = await self._audited_tools(repos_path)
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("\"action\": \"clone\"" in m and "\"outcome\": \"success\"" in m for m in msgs)
+
+    async def test_clone_scheme_rejected_emits_warning(self, repos_path, caplog):
+        tools = await self._audited_tools(repos_path)
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_clone_repo("o/r", url="file:///etc/passwd")
+        assert out.startswith("Error:")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "\"action\": \"clone\"" in m
+            and "\"outcome\": \"blocked\"" in m
+            and "url rejected" in m
+            for m in msgs
+        )
+
+    async def test_collision_emits_warning(self, repos_path, source_repo, caplog):
+        tools = await self._audited_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert "already exists" in out
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "\"action\": \"clone\"" in m
+            and "\"outcome\": \"blocked\"" in m
+            and "already exists" in m
+            for m in msgs
+        )
+
+    async def test_fetch_tampered_origin_emits_warning(self, repos_path, source_repo, caplog):
+        tools = await self._audited_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        root = repos_path / "o" / "r"
+        await run_git(root, "remote", "set-url", "origin", "file:///tmp/evil")
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_fetch_repo("o/r")
+        assert out.startswith("Error:")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "\"action\": \"fetch\"" in m
+            and "\"outcome\": \"blocked\"" in m
+            and "origin not allow-listed" in m
+            for m in msgs
+        )
+
+    async def test_clone_failed_emits_error(self, repos_path, git_daemon, caplog):
+        tools = await self._audited_tools(repos_path)
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_clone_repo("o/r", url=daemon_source(git_daemon, "does-not-exist").url)
+        assert out.startswith("Error:")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "\"action\": \"clone\"" in m
+            and "\"outcome\": \"failed\"" in m
+            for m in msgs
+        )
+
+    async def test_disabled_valve_is_silent(self, repos_path, source_repo, caplog):
+        tools = await self._audited_tools(repos_path, enabled=False)
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert caplog.records == []
 
 
 class TestReleaseSortKey:

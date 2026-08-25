@@ -27,6 +27,7 @@ from common import (
     truncate_output,
     validate_clone_url,
     validate_ref,
+    audit_event,
     _normalize_remote,
 )
 
@@ -701,6 +702,54 @@ class TestTrimCause:
     def test_limit(self):
         out = trim_cause("x" * 1000)
         assert len(out) <= 300 + 3  # limit + ellipsis
+
+
+class TestAuditEvent:
+    """S5: the audit helper is opt-in, logger-only, and redacted."""
+
+    def test_noop_when_disabled(self, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.INFO, logger="code_explorer"):
+            audit_event(False, _logging.WARNING, "clone", "o/r", "blocked", detail="x")
+        assert caplog.records == []
+
+    def test_emits_structured_event_when_enabled(self, caplog):
+        import logging as _logging
+        import json as _json
+
+        with caplog.at_level(_logging.INFO, logger="code_explorer"):
+            audit_event(True, _logging.WARNING, "clone", "o/r", "blocked", detail="url rejected")
+        assert len(caplog.records) == 1
+        rec = caplog.records[0]
+        assert rec.name == "code_explorer"
+        assert rec.levelno == _logging.WARNING
+        payload = _json.loads(rec.getMessage().split(" ", 1)[1])
+        assert payload["action"] == "clone"
+        assert payload["repo"] == "o/r"
+        assert payload["outcome"] == "blocked"
+        assert payload["detail"] == "url rejected"
+        assert payload["level"] == _logging.WARNING
+        assert payload["ts"]  # present
+
+    def test_error_level_uses_logger_error(self, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.INFO, logger="code_explorer"):
+            audit_event(True, _logging.ERROR, "clone", "o/r", "failed", error="boom")
+        assert caplog.records[0].levelno == _logging.ERROR
+
+    async def test_git_missing_audited_unconditionally(self, monkeypatch, caplog):
+        """The runtime git-missing event is fail-closed and emitted even with
+        the Valve off (it has no per-instance Valve; a broken environment must
+        leave a trace)."""
+        import logging as _logging
+
+        monkeypatch.setattr(common.shutil, "which", lambda name: None)
+        with caplog.at_level(_logging.ERROR, logger="code_explorer"):
+            with pytest.raises(ToolError):
+                await run_allowed(git_args("--version"), 10)
+        assert any("required binary not found" in r.getMessage() for r in caplog.records)
 
 
 class TestGitArgs:

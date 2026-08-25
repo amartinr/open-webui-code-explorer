@@ -33,12 +33,12 @@ then control returns to the user.
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | `audit_log` helper in `common.py` (opt-in, logger-only, redacted) + Valves contract update (4 scripts) | ☐ |
-| 2 | WARNING events in the repos template (blocked rejects, collisions, release-no-tags, pull issues, fetch/pull timeout) | ☐ |
-| 3 | ERROR events (clone failed/cancelled/checkout/permissions/timeout, fetch/pull failed, git missing) + INFO on successful clone/fetch/pull | ☐ |
-| 4 | Tests: spy on the logger (Valve off = silent, on = events with fields), redaction, Valves contract | ☐ |
-| 5 | Docs: `DESIGN.md` §5.6 (helper) + new audit section (event table) + CRITICAL-deferred note; `META_MODEL_PROMPT.md` untouched | ☐ |
-| 6 | Version bump `1.2.4` (4 places), regenerate `dist/`, full suite, final checks | ☐ |
+| 1 | `audit_log` helper in `common.py` (opt-in, logger-only, redacted) + Valves contract update (4 scripts) | ✅ |
+| 2 | WARNING events in the repos template (blocked rejects, collisions, release-no-tags, pull issues, fetch/pull timeout) | ✅ |
+| 3 | ERROR events (clone failed/cancelled/checkout/permissions/timeout, fetch/pull failed, git missing) + INFO on successful clone/fetch/pull | ✅ |
+| 4 | Tests: spy on the logger (Valve off = silent, on = events with fields), redaction, Valves contract | ✅ |
+| 5 | Docs: `DESIGN.md` §5.6 (helper) + new audit section (event table) + CRITICAL-deferred note; `META_MODEL_PROMPT.md` untouched | ✅ |
+| 6 | Version bump `1.2.4` (4 places), regenerate `dist/`, full suite, final checks | ✅ |
 
 ---
 
@@ -181,14 +181,14 @@ identified as future CRITICAL events, without adding the code.
 
 ## 10. Delivery checklist
 
-- [ ] Only `common.py` + `templates/*.py.tpl` + `build.py` (frontmatter) edited; `dist/` regenerated via `build.py`.
-- [ ] `python -m pytest` all green (existing 395 + new).
-- [ ] `audit_log` Valve present on all four scripts (Valves contract test updated).
-- [ ] Valve off = complete no-op (tested); on = WARNING/ERROR/INFO events with fields (tested); errors redacted via `trim_cause`.
-- [ ] CRITICAL events NOT implemented; documented as deferred in `DESIGN.md`.
-- [ ] `META_MODEL_PROMPT.md` untouched.
-- [ ] Version bumped to `1.2.4` (four places); `dist/` regenerated.
-- [ ] One `hardening:` commit per step, each ending green; push.
+- [x] Only `common.py` + `templates/*.py.tpl` + `build.py` (frontmatter) edited; `dist/` regenerated via `build.py`.
+- [x] `python -m pytest` all green (405).
+- [x] `audit_log` Valve present on all four scripts (Valves contract test updated).
+- [x] Valve off = complete no-op (tested); on = WARNING/ERROR/INFO events with fields (tested); errors redacted via `trim_cause`.
+- [x] CRITICAL events NOT implemented; documented as deferred in `DESIGN.md`.
+- [x] `META_MODEL_PROMPT.md` untouched.
+- [x] Version bumped to `1.2.4` (four places); `dist/` regenerated.
+- [x] One `hardening:` commit per step, each ending green; push.
 
 ## 11. Explicitly out of scope
 

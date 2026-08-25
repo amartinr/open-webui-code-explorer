@@ -2,7 +2,7 @@
 title: Code Explorer - Commits
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.3
+version: 1.2.4
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Inspect branches, tags, and commit history of cloned repositories for the meta model. Read-only; uses only the git binary with a headless environment.
 required_open_webui_version: 0.9.6
@@ -32,6 +32,10 @@ class Tools:
         )
         max_bytes: int = Field(
             20480, description="Hard byte cap on tool output (20 KB default)."
+        )
+        audit_log: bool = Field(
+            False,
+            description="Enable audit logging of repo operations and security rejections to the code_explorer logger (opt-in; off by default).",
         )
 
     # ------------------------------------------------------------------
