@@ -721,6 +721,72 @@ class TestSearchText:
         out = await tools.cexp_search_text("o/r", "hello")
         assert out.startswith("Not found:")
 
+    async def test_count_only_counts_matches_per_file(self, repos_path, source_repo):
+        """E3: count_only returns {"path", "count"} - one item per file with
+        its match count, no lines."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text("testowner/testrepo", "def ", count_only=True)
+        result = parse_json(out)
+        assert result["items"] == [{"path": "hello.py", "count": 2}]
+        # a single-file match also works
+        out = await tools.cexp_search_text("testowner/testrepo", "class ", count_only=True)
+        result = parse_json(out)
+        assert result["items"] == [{"path": "sub/deep.py", "count": 1}]
+
+    async def test_files_only_returns_unique_paths(self, repos_path, source_repo):
+        """E3: files_only returns one {"path"} per matching file, no lines."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text("testowner/testrepo", "def ", files_only=True)
+        result = parse_json(out)
+        assert result["items"] == [{"path": "hello.py"}]
+
+    async def test_count_only_prevails_over_files_only(self, repos_path, source_repo):
+        """E3: count_only+files_only -> path+count (count prevails)."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "def ", files_only=True, count_only=True
+        )
+        result = parse_json(out)
+        assert result["items"] == [{"path": "hello.py", "count": 2}]
+
+    async def test_context_ignored_in_aggregate_modes(self, repos_path, source_repo):
+        """E3: context is ignored when either flag is set (no lines to show)."""
+        tools = await clone_source(repos_path, source_repo)
+        for kwargs in ({"count_only": True}, {"files_only": True}):
+            plain = parse_json(
+                await tools.cexp_search_text("testowner/testrepo", "def ", **kwargs)
+            )
+            with_ctx = parse_json(
+                await tools.cexp_search_text(
+                    "testowner/testrepo", "def ", context=5, **kwargs
+                )
+            )
+            assert plain == with_ctx
+
+    async def test_aggregate_modes_cap_file_count(self, repos_path, source_repo):
+        """E3: max_results caps the FILE count in these modes (one item per
+        file), not the line count."""
+        tools = await clone_source(repos_path, source_repo)
+        tools.valves.max_results = 1
+        # "e" matches hello.py, world.md and sub/deep.py: three files.
+        out = await tools.cexp_search_text("testowner/testrepo", "e", count_only=True)
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        assert result["truncated"] == {"shown": 1, "total": 4}
+
+    async def test_aggregate_modes_case_sensitive_and_path(self, repos_path, source_repo):
+        """E3: case_sensitive and path behave exactly as today in aggregate
+        modes."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "HELLO", path="hello.py", case_sensitive=True, count_only=True
+        )
+        assert parse_json(out)["items"] == []
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "hello", path="hello.py", case_sensitive=True, count_only=True
+        )
+        assert parse_json(out)["items"] == [{"path": "hello.py", "count": 1}]
+
 
 # ---------------------------------------------------------------------------
 # cexp_search_symbol

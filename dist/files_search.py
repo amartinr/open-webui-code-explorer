@@ -1385,22 +1385,30 @@ class Tools:
         filter: Optional[str] = None,
         context: Optional[int] = None,
         case_sensitive: bool = False,
+        files_only: bool = False,
+        count_only: bool = False,
     ) -> str:
         """Search repository contents with a pure-Python regex engine.
 
         Use to find where text or symbols appear. The query is a regular
         expression. Returns one item per match with path, line, and matched
-        text (plus optional context lines). Honors .gitignore.
+        text (plus optional context lines). With files_only=True, returns one
+        item per matching file ({"path"}); with count_only=True, one item per
+        file with the match count ({"path", "count"}). Honors .gitignore.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Regular expression to search for (required).
         :param path: Optional subdirectory or file to narrow the search, relative to the repository root; do NOT include the "<owner>/<name>" prefix; always use "/" as separator (e.g. "src/").
         :param filter: Optional space-separated glob patterns; a leading "!" excludes.
-        :param context: Optional number of context lines around each match.
+        :param context: Optional number of context lines around each match (ignored when files_only or count_only is set).
         :param case_sensitive: Optional; default False (case-insensitive).
+        :param files_only: Optional; if True, return one item per matching file (path only), no lines.
+        :param count_only: Optional; if True, return one item per file with the number of matches, no lines (prevails over files_only).
         """
         try:
-            return await self._search_text(repo, query, path, filter, context, case_sensitive)
+            return await self._search_text(
+                repo, query, path, filter, context, case_sensitive, files_only, count_only
+            )
         except Exception as e:
             return error_string(e)
 
@@ -1412,6 +1420,8 @@ class Tools:
         filter: Optional[str],
         context: Optional[int],
         case_sensitive: bool,
+        files_only: bool,
+        count_only: bool,
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
@@ -1426,12 +1436,30 @@ class Tools:
         includes, excludes = parse_filter(filter)
         pattern = _compile_pattern(query, case_sensitive)
 
-        items = []
-        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-            _, text = _binary_or_readable(fp)
-            _search_in_text(pattern, text, 0, context or 0, rel_f, items)
+        if count_only:
+            # One item per file: {path, count}. No line matches, no context.
+            items = []
+            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+                _, text = _binary_or_readable(fp)
+                count = sum(1 for line in text.split("\n") if pattern.search(line))
+                if count:
+                    items.append({"path": rel_f, "count": count})
+            items.sort(key=lambda i: i["path"])
+        elif files_only:
+            # One item per matching file: {path}. No lines, no context.
+            items = []
+            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+                _, text = _binary_or_readable(fp)
+                if any(pattern.search(line) for line in text.split("\n")):
+                    items.append({"path": rel_f})
+            items.sort(key=lambda i: i["path"])
+        else:
+            items = []
+            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+                _, text = _binary_or_readable(fp)
+                _search_in_text(pattern, text, 0, context or 0, rel_f, items)
+            items.sort(key=lambda i: (i["path"], i.get("line") or 0))
 
-        items.sort(key=lambda i: (i["path"], i.get("line") or 0))
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
