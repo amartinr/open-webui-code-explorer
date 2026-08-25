@@ -233,7 +233,7 @@ def validate_ref(ref: str) -> str
 
 def validate_clone_url(url: str) -> str
 # Validate and normalize a clone `url` override before it reaches git
-# (Enhancement B, ENHANCEMENT_B.md). Protocol allow-list: https/http/git/ssh;
+# Protocol allow-list: https/http/git/ssh;
 # everything else (ext::/sh:: command URLs, file://, ftp, rsync, ...) is
 # rejected with a cause explaining why. scp-like "user@host:path" is
 # normalized to ssh://user@host/path (git's own scp-like semantics; no port
@@ -251,7 +251,7 @@ def _normalize_remote(url: str) -> str
 async def _remote_origin(root: str) -> str
 # The repo's remote origin URL (git -C <root> remote get-url origin), or ""
 # when there is no origin. Used by the clone-collision message and by
-# cexp_list_repos (new `origin` field, Enhancement B).
+# cexp_list_repos (new `origin` field).
 ```
 
 `ToolError` is a shared exception mapped to a user-facing message (never a raw
@@ -1148,14 +1148,13 @@ Still open:
 
 ## 12. Post-1.0 Enhancements
 
-Two enhancements are planned beyond the initial five phases. They are
-independent of each other and can be implemented, reviewed, and released
-separately. Both follow the same build discipline (§9.2): edit the templates
-and `common.py`, regenerate `dist/`, and commit the regenerated output.
+Three enhancements extend the initial five phases. Each follows the same
+build discipline (§9.2): edit the templates and `common.py`, regenerate
+`dist/`, and commit the regenerated output. The substance of each is
+recorded where it lives (§5.6 shared helpers, §6 selector vocabulary, §7
+tool specs, §10 decisions); this section summarizes them for the record.
 
 ### 12.1 Enhancement A — Read-at-Ref and Large-Diff Gaps
-
-**Status:** ready to implement (see `PLAN.md`).
 
 **Motivation.** Two field-observed limitations: (1) the file reader could only
 read the working tree, so inspecting a file at a released tag forced the model
@@ -1198,10 +1197,10 @@ working-tree mutation for reads.
 - Build regenerates `dist/`, the full suite is green, and docs reflect the new
   surface.
 
-### 12.2 Enhancement B — Git Provider & Protocol Selection (proposed)
+### 12.2 Enhancement B — Git Provider & Protocol Selection
 
-**Status:** redesigned (was "multi-host directory restructure"); see
-`ENHANCEMENT_B.md` for the full proposal. No hard ordering dependency on A.
+Redesigned from the original "multi-host directory restructure" proposal;
+no hard ordering dependency on A.
 The directory layout STAYS `<repos_path>/<owner>/<name>` (two levels): the
 provider/protocol is NOT part of the path. It is metadata already persisted
 by git itself (`remote.origin.url` in `<repo>/.git/config`, written by the
@@ -1217,11 +1216,9 @@ exfiltration gap where only a leading dash was rejected; scp-like
 blocked (local exfiltration / command execution). A three-level
 `<host>/<owner>/<name>` layout is explicitly deferred: it would only be
 justified if two same-namespace repos from different providers must coexist
-simultaneously. See `ENHANCEMENT_B.md` for full scope, tests, and order.
+simultaneously.
 
-### 12.3 Enhancement C — Explicit Recursion Control in `cexp_list_files` (done)
-
-**Status:** implemented; see `ENHANCEMENT_C.md`.
+### 12.3 Enhancement C — Explicit Recursion Control in `cexp_list_files`
 
 `cexp_list_files` gains `recursive: bool = False`: by default it lists only
 the direct entries under `path` (compact, cheap, predictable); `recursive=True`

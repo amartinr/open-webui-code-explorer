@@ -143,7 +143,7 @@ class TestValidateRef:
 
 
 # ---------------------------------------------------------------------------
-# validate_clone_url / _normalize_remote (Enhancement B, ENHANCEMENT_B.md §2)
+# validate_clone_url / _normalize_remote
 # ---------------------------------------------------------------------------
 
 

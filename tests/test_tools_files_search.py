@@ -3,7 +3,7 @@
 
 All tests operate on a local `git://` repository served by the `git daemon`
 fixture (conftest.py): `file://` is blocked by the clone-URL allow-list
-(ENHANCEMENT_B.md), so the daemon provides a real network-agnostic origin.
+so the daemon provides a real network-agnostic origin.
 """
 
 import inspect
@@ -190,7 +190,7 @@ class TestListFiles:
     async def test_default_lists_direct_entries_only(self, repos_path, source_repo):
         """The default is non-recursive: only the direct entries under the
         path are listed; subdirectories appear as entries but are not
-        descended into (Enhancement C, cexp_list_files recursive mode)."""
+        descended into (cexp_list_files recursive mode)."""
         tools = await clone_source(repos_path, source_repo)
         result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
         by_path = {i["path"]: i["kind"] for i in result["items"]}

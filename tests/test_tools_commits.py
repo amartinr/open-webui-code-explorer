@@ -4,7 +4,7 @@
 All tests operate on a local `git://` repository with real git history
 (branches, tags, multiple commits, a diverging branch), served by the
 `git daemon` fixture (conftest.py): `file://` is blocked by the clone-URL
-allow-list (ENHANCEMENT_B.md), so the daemon provides a real
+allow-list, so the daemon provides a real
 network-agnostic origin.
 """
 

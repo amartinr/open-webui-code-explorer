@@ -2,7 +2,7 @@
 
 All tests operate on local `git://` repositories served by the `git daemon`
 fixture (conftest.py): `file://` is blocked by the clone-URL allow-list
-(ENHANCEMENT_B.md), so the daemon provides a real network-agnostic origin.
+so the daemon provides a real network-agnostic origin.
 No network access is needed and the full surface is exercised end to end.
 """
 
@@ -219,7 +219,7 @@ class TestCloneRepo:
 
 
 # ---------------------------------------------------------------------------
-# Clone URL validation & collision policy (Enhancement B, ENHANCEMENT_B.md)
+# Clone URL validation & collision policy
 # ---------------------------------------------------------------------------
 
 

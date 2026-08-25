@@ -68,7 +68,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _RELEASE_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)([-+].*)?$")
 
-# Clone-URL allow-list (Enhancement B, ENHANCEMENT_B.md §2.1). Only these
+# Clone-URL allow-list. Only these
 # schemes may appear in a cexp_clone_repo `url` override. Everything else
 # (ext::/sh:: command URLs, file://, ftp, rsync, ...) is rejected.
 ALLOWED_CLONE_SCHEMES = {"https", "http", "git", "ssh"}
@@ -641,8 +641,7 @@ def validate_ref(ref: str) -> str:
 
 
 def validate_clone_url(url: str) -> str:
-    """Validate and normalize a clone `url` override before it reaches git
-    (Enhancement B, ENHANCEMENT_B.md §2.1).
+    """Validate and normalize a clone `url` override before it reaches git.
 
     Protocol allow-list (https/http/git/ssh). Everything else is rejected,
     which closes the RCE gap (`ext::`/`sh::` command URLs) and the local
@@ -692,8 +691,7 @@ def validate_clone_url(url: str) -> str:
 
 
 def _normalize_remote(url: str) -> str:
-    """Canonical form for COMPARING remotes (collision detection only,
-    ENHANCEMENT_B.md §2.3).
+    """Canonical form for COMPARING remotes (collision detection only).
 
     Compares the logical origin: lowercases the host (without any userinfo),
     keeps the path case-sensitive (git hosting paths are), and strips a
@@ -738,7 +736,7 @@ def resolve_repo_root(repo: str, repos_path: str) -> Path:
 async def _remote_origin(root: str) -> str:
     """The repo's remote origin URL (git -C <root> remote get-url origin), or
     "" when the clone has no origin. Used by the clone-collision message and
-    by cexp_list_repos' `origin` field (Enhancement B, ENHANCEMENT_B.md §2.2)."""
+    by cexp_list_repos' `origin` field."""
     res = await run_allowed(
         git_args("-C", root, "remote", "get-url", "origin"), TIMEOUT_SEARCH
     )

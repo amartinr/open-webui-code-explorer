@@ -79,7 +79,7 @@ class Tools:
             ref = validate_ref(ref)
         if url is not None:
             # Protocol allow-list + scp-like normalization BEFORE the clone so
-            # a malicious URL never reaches git (ENHANCEMENT_B.md §2.1).
+            # a malicious URL never reaches git.
             url = validate_clone_url(url)
             remote = url
         else:

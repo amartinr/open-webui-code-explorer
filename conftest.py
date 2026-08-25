@@ -1,5 +1,5 @@
 """Pytest bootstrap: make the repo root importable (common, dist), plus the
-shared `git daemon` fixture (Enhancement B, ENHANCEMENT_B.md §5.1)."""
+shared `git daemon` fixture."""
 
 import socket
 import subprocess
@@ -35,7 +35,7 @@ def git_daemon(tmp_path_factory):
     """A local `git daemon` (git:// protocol) serving non-bare repos from a
     session-scoped base dir.
 
-    Why: the clone-URL allow-list blocks `file://` (ENHANCEMENT_B.md §2.1),
+    Why: the clone-URL allow-list blocks `file://`,
     so the integration tests clone over `git://127.0.0.1:<port>/<name>`
     instead. Verified behaviour: the daemon serves non-bare repos directly
     (no export markers), serves ALL branches, and reads live state
