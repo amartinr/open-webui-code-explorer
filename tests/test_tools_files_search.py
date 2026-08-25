@@ -772,7 +772,9 @@ class TestSearchText:
         out = await tools.cexp_search_text("testowner/testrepo", "e", count_only=True)
         result = parse_json(out)
         assert len(result["items"]) == 1
-        assert result["truncated"] == {"shown": 1, "total": 4}
+        assert result["truncated"]["shown"] == 1
+        assert result["truncated"]["total"] == 4
+        assert isinstance(result["truncated"].get("hint"), str)  # E5
 
     async def test_aggregate_modes_case_sensitive_and_path(self, repos_path, source_repo):
         """E3: case_sensitive and path behave exactly as today in aggregate
@@ -786,6 +788,33 @@ class TestSearchText:
             "testowner/testrepo", "hello", path="hello.py", case_sensitive=True, count_only=True
         )
         assert parse_json(out)["items"] == [{"path": "hello.py", "count": 1}]
+
+    async def test_truncation_hint_present_when_truncated(self, repos_path, source_repo):
+        """E5: a structured tool carries a hint inside truncated exactly when
+        truncated; absent when not."""
+        tools = await clone_source(repos_path, source_repo)
+        # Not truncated: no truncated object, no hint.
+        out = await tools.cexp_list_files("testowner/testrepo", recursive=True)
+        result = parse_json(out)
+        assert "truncated" not in result
+        # Truncated: hint present.
+        tools.valves.max_results = 2
+        out = await tools.cexp_list_files("testowner/testrepo", recursive=True)
+        result = parse_json(out)
+        assert result["truncated"]["shown"] == 2
+        assert isinstance(result["truncated"].get("hint"), str)
+
+    async def test_truncation_hint_raw_tool(self, repos_path, source_repo):
+        """E5: a raw-text tool appends a hint: line after the marker."""
+        tools = await clone_source(repos_path, source_repo)
+        tools.valves.max_bytes = 100
+        out = await tools.cexp_read_file("testowner/testrepo", "big.txt")
+        assert "truncated" in out
+        assert "hint:" in out
+        # Not truncated: no hint.
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py")
+        assert "truncated" not in out
+        assert "hint:" not in out
 
 
 # ---------------------------------------------------------------------------

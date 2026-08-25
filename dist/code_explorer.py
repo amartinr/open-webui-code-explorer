@@ -2,7 +2,7 @@
 title: Code Explorer - All
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.1.0
+version: 1.2.0
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: All Code Explorer tools in one script, prefixed cexp_: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -827,13 +827,15 @@ def resolve_path(repo: str, path: Optional[str], repos_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def truncate_output(text: str, max_lines: int, max_bytes: int) -> str:
+def truncate_output(text: str, max_lines: int, max_bytes: int, hint: Optional[str] = None) -> str:
     """Cap `text` by lines and bytes; append a truncation marker when cut.
 
     Whichever cap (lines or bytes) is hit first truncates. The marker always
     tells the agent the output is incomplete: line caps report `showing N of
     M lines`; byte-only caps report bytes (a bare `showing N of M` would be
-    misleading when the line cap did not bind).
+    misleading when the line cap did not bind). When `hint` is given (a
+    tool-specific "how to narrow" suggestion) it is appended after the marker
+    on its own line; default None keeps the output unchanged.
     """
     text = text or ""
     total_lines = len(text.splitlines())
@@ -843,15 +845,20 @@ def truncate_output(text: str, max_lines: int, max_bytes: int) -> str:
     if total_lines > max_lines:
         cut = "\n".join(text.splitlines()[:max_lines])
         marker = "... (truncated: showing {} of {} lines)".format(max_lines, total_lines)
+        if hint:
+            marker += "\nhint: " + hint
         candidate = cut + "\n" + marker
         if len(candidate.encode("utf-8")) <= max_bytes:
             return candidate
+        # The hint itself must survive the byte cap: cut the content first.
         budget = max_bytes - len(marker.encode("utf-8")) - 1
         return _trim_bytes(cut, max(0, budget)) + "\n" + marker
     # Only the byte cap binds.
     marker = "... (truncated: byte cap of {} reached; showing first {} of {} bytes)".format(
         max_bytes, max_bytes, total_bytes
     )
+    if hint:
+        marker += "\nhint: " + hint
     budget = max_bytes - len(marker.encode("utf-8")) - 1
     return _trim_bytes(text, max(0, budget)) + "\n" + marker
 
@@ -865,7 +872,7 @@ def _trim_bytes(text: str, budget: int) -> str:
     return text
 
 
-def json_output(data: dict, max_bytes: int) -> str:
+def json_output(data: dict, max_bytes: int, hint: Optional[str] = None) -> str:
     """Serialize `data` as a single valid JSON object, byte-capped.
 
     Structured tools return JSON (DESIGN.md §6, §9.3). The item cap
@@ -873,9 +880,15 @@ def json_output(data: dict, max_bytes: int) -> str:
     the hard byte cap while keeping the JSON valid: it tries indented output
     first, then compact, then drops trailing `items` entries (updating
     `truncated` metadata) until it fits. The result is always valid JSON.
+    When `hint` is given it is added inside the `truncated` object (whether
+    capped by max_results or by bytes), a tool-specific "how to narrow"
+    suggestion; default None keeps the output shape unchanged.
     """
     def _encode(indent: Optional[int]) -> str:
         return json.dumps(data, ensure_ascii=False, indent=indent)
+
+    if hint and isinstance(data.get("truncated"), dict) and "hint" not in data["truncated"]:
+        data["truncated"]["hint"] = hint
 
     text = _encode(2)
     if len(text.encode("utf-8")) <= max_bytes:
@@ -887,6 +900,8 @@ def json_output(data: dict, max_bytes: int) -> str:
     if isinstance(items, list) and items:
         total = (data.get("truncated") or {}).get("total", len(items))
         data["truncated"] = {"shown": len(items), "total": total, "reason": "bytes"}
+        if hint:
+            data["truncated"]["hint"] = hint
         while items and len(_encode(None).encode("utf-8")) > max_bytes:
             items.pop()
             data["truncated"]["shown"] = len(items)
@@ -1145,7 +1160,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="refs with changes are capped; the clone is up to date otherwise"
+        )
 
     async def _list_refs(self, root: str) -> Dict[str, str]:
         res = await run_allowed(
@@ -1213,7 +1230,7 @@ class Tools:
                 self.valves.max_bytes,
             )
         return json_output(
-            {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes)},
+            {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes, hint="pull output was large; the repo is updated regardless")},
             self.valves.max_bytes,
         )
 
@@ -1259,7 +1276,9 @@ class Tools:
         if len(entries) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(entries)}
             data["items"] = entries[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use cexp_remove_repo to free disk space, or raise the max_results Valve"
+        )
 
     async def _current_branch(self, root: str) -> str:
         res = await run_allowed(git_args("-C", root, "symbolic-ref", "--short", "-q", "HEAD"), TIMEOUT_SEARCH)
@@ -1362,7 +1381,11 @@ class Tools:
             rel = str(base.relative_to(root))
             ok = type != "dir" and glob_match(rel, includes, excludes)
             items = [{"path": rel, "kind": "file"}] if ok else []
-            return json_output({"items": items}, self.valves.max_bytes)
+            return json_output(
+                {"items": items},
+                self.valves.max_bytes,
+                hint="use filter=<glob> to narrow, or raise the max_results Valve",
+            )
 
         items = []
         if base.is_dir():
@@ -1381,7 +1404,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use filter=<glob> or a narrower path to reduce the listing, or raise the max_results Valve"
+        )
 
     async def _list_files_at_ref(
         self,
@@ -1490,7 +1515,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use filter=<glob>, a narrower path, or recursive/max_depth to control the listing"
+        )
 
     async def cexp_read_file(
         self,
@@ -1579,7 +1606,12 @@ class Tools:
         if range_total <= MAX_INLINE_LINES:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = list(itertools.islice(f, start_ - 1, end_))
-            return truncate_output("".join(lines), self.valves.max_lines, self.valves.max_bytes)
+            return truncate_output(
+                "".join(lines),
+                self.valves.max_lines,
+                self.valves.max_bytes,
+                hint="use start=<line> and end=<line> to read a narrower range",
+            )
 
         # Large range: read only the lines that will be shown, then cap.
         shown = min(range_total, self.valves.max_lines)
@@ -1590,6 +1622,7 @@ class Tools:
         result = text + marker
         if len(result.encode("utf-8")) > self.valves.max_bytes:
             bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
+            bmarker += "\nhint: use start=<line> and end=<line> to read a narrower range"
             budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
             result = _trim_bytes(text, budget) + bmarker
         return result
@@ -1711,6 +1744,7 @@ class Tools:
                 "".join(lines[start_ - 1 : end_]),
                 self.valves.max_lines,
                 self.valves.max_bytes,
+                hint="use start=<line> and end=<line> to read a narrower range",
             )
 
         # Large range: show the first max_lines lines, then a marker.
@@ -1720,6 +1754,7 @@ class Tools:
         result = head + marker
         if len(result.encode("utf-8")) > self.valves.max_bytes:
             bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
+            bmarker += "\nhint: use start=<line> and end=<line> to read a narrower range"
             budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
             result = _trim_bytes(head, budget) + bmarker
         return result
@@ -1811,7 +1846,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<dir>, filter=<glob>, or files_only/count_only to reduce the result set"
+        )
 
     async def cexp_search_symbol(
         self,
@@ -1889,7 +1926,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<dir> or filter=<glob> to narrow, or raise the max_results Valve"
+        )
 
     def _iter_text_files(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
         """Yield (rel_path, Path) for every text file under `base` that passes
@@ -1986,7 +2025,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use remote=True to include remote-tracking branches, or raise the max_results Valve"
+        )
 
     async def cexp_list_tags(self, repo: str) -> str:
         """List tags of a repository, newest first.
@@ -2034,7 +2075,9 @@ class Tools:
         if len(tags) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(tags)}
             data["items"] = tags[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use cexp_compare_commits/cexp_read_file with a specific tag, or raise the max_results Valve"
+        )
 
     async def cexp_list_commits(
         self,
@@ -2112,7 +2155,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<file> or first_parent=True to narrow the history, or raise the max_results Valve"
+        )
 
     async def cexp_show_commit(
         self,
@@ -2156,7 +2201,12 @@ class Tools:
         res = await run_allowed(args, TIMEOUT_SEARCH)
         if res.returncode != 0:
             raise ToolError(f"show commit failed: {commit!r}", cause=trim_cause(res.stderr))
-        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
+        return truncate_output(
+            res.stdout,
+            self.valves.max_lines,
+            self.valves.max_bytes,
+            hint="use path=<file> to narrow to a single file, or read either side at its ref with cexp_read_file(ref=...)",
+        )
 
     async def cexp_compare_commits(
         self,
@@ -2221,4 +2271,9 @@ class Tools:
             raise ToolError(
                 f"compare failed: {ref_a}...{ref_b}", cause=trim_cause(res.stderr)
             )
-        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
+        return truncate_output(
+            res.stdout,
+            self.valves.max_lines,
+            self.valves.max_bytes,
+            hint="use path=<file> (and optionally context=N) to narrow the diff",
+        )

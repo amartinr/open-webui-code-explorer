@@ -567,7 +567,9 @@ class TestListRepos:
         out = await tools.cexp_list_repos()
         result = parse_json(out)
         assert len(result["items"]) == 2
-        assert result["truncated"] == {"shown": 2, "total": 5}
+        assert result["truncated"]["shown"] == 2
+        assert result["truncated"]["total"] == 5
+        assert isinstance(result["truncated"].get("hint"), str)  # E5
 
 
 class TestReleaseSortKey:

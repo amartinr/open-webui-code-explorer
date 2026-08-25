@@ -23,7 +23,7 @@
 | 5 | E2: `cexp_list_commits` + `first_parent` (template + tests) | ✅ |
 | 6 | E3: `cexp_search_text` + `files_only`/`count_only` (template + tests) | ✅ |
 | 7 | E4: `author`/`date` fields in `cexp_list_commits` (template + tests) | ✅ |
-| 8 | E5: truncation hint (common.py + all tools + tests) | ☐ |
+| 8 | E5: truncation hint (common.py + all tools + tests) | ✅ |
 | 9 | E6: "repo not found" suggests existing clones (common.py helper + templates + tests) | ☐ |
 | 10 | E7: `cexp_search_history` pickaxe tool (template + tests) | ☐ |
 | 11 | E8: `cexp_list_branches` + `merged` (template + tests) | ☐ |

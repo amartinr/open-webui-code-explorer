@@ -2,7 +2,7 @@
 title: Code Explorer - Commits
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.1.0
+version: 1.2.0
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Inspect branches, tags, and commit history of cloned repositories for the meta model. Read-only; uses only the git binary with a headless environment.
 required_open_webui_version: 0.9.6
@@ -89,7 +89,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use remote=True to include remote-tracking branches, or raise the max_results Valve"
+        )
 
     # ------------------------------------------------------------------
     # cexp_list_tags
@@ -141,7 +143,9 @@ class Tools:
         if len(tags) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(tags)}
             data["items"] = tags[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use cexp_compare_commits/cexp_read_file with a specific tag, or raise the max_results Valve"
+        )
 
     # ------------------------------------------------------------------
     # cexp_list_commits
@@ -223,7 +227,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<file> or first_parent=True to narrow the history, or raise the max_results Valve"
+        )
 
     # ------------------------------------------------------------------
     # cexp_show_commit
@@ -271,7 +277,12 @@ class Tools:
         res = await run_allowed(args, TIMEOUT_SEARCH)
         if res.returncode != 0:
             raise ToolError(f"show commit failed: {commit!r}", cause=trim_cause(res.stderr))
-        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
+        return truncate_output(
+            res.stdout,
+            self.valves.max_lines,
+            self.valves.max_bytes,
+            hint="use path=<file> to narrow to a single file, or read either side at its ref with cexp_read_file(ref=...)",
+        )
 
     # ------------------------------------------------------------------
     # cexp_compare_commits
@@ -340,7 +351,12 @@ class Tools:
             raise ToolError(
                 f"compare failed: {ref_a}...{ref_b}", cause=trim_cause(res.stderr)
             )
-        return truncate_output(res.stdout, self.valves.max_lines, self.valves.max_bytes)
+        return truncate_output(
+            res.stdout,
+            self.valves.max_lines,
+            self.valves.max_bytes,
+            hint="use path=<file> (and optionally context=N) to narrow the diff",
+        )
 
     # ------------------------------------------------------------------
     # shared internals

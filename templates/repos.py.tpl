@@ -2,7 +2,7 @@
 title: Code Explorer - Repos
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.1.0
+version: 1.2.0
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Clone, fetch, pull, and list code repositories for the meta model. Read-only with respect to source code; writes happen only inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -256,7 +256,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="refs with changes are capped; the clone is up to date otherwise"
+        )
 
     async def _list_refs(self, root: str) -> Dict[str, str]:
         res = await run_allowed(
@@ -328,7 +330,7 @@ class Tools:
                 self.valves.max_bytes,
             )
         return json_output(
-            {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes)},
+            {"repo": repo, "result": "ok", "output": truncate_output(out, self.valves.max_lines, self.valves.max_bytes, hint="pull output was large; the repo is updated regardless")},
             self.valves.max_bytes,
         )
 
@@ -378,7 +380,9 @@ class Tools:
         if len(entries) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(entries)}
             data["items"] = entries[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use cexp_remove_repo to free disk space, or raise the max_results Valve"
+        )
 
     async def _current_branch(self, root: str) -> str:
         res = await run_allowed(git_args("-C", root, "symbolic-ref", "--short", "-q", "HEAD"), TIMEOUT_SEARCH)

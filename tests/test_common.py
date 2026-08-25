@@ -472,6 +472,35 @@ class TestTruncateOutput:
         assert "showing 5 of 1000 lines" in out
         assert out.count("\n") == 5  # 4 separators + marker line
 
+    def test_hint_appended_when_truncated(self):
+        """E5: a hint line follows the marker exactly when truncated."""
+        text = "\n".join(f"line{i}" for i in range(10))
+        out = truncate_output(text, 3, 100000, hint="use start=/end= to narrow")
+        assert out == (
+            "line0\nline1\nline2\n... (truncated: showing 3 of 10 lines)\n"
+            "hint: use start=/end= to narrow"
+        )
+
+    def test_hint_absent_when_not_truncated(self):
+        """E5: no truncation, no hint - output is byte-identical to before."""
+        text = "a\nb\nc"
+        assert truncate_output(text, 100, 100000, hint="any") == text
+
+    def test_hint_absent_without_arg(self):
+        """E5: default None keeps the old output (no hint line)."""
+        text = "\n".join(f"line{i}" for i in range(10))
+        out = truncate_output(text, 3, 100000)
+        assert "hint:" not in out
+
+    def test_hint_survives_byte_cap(self):
+        """E5: when the byte cap binds, the hint is preserved (content is cut
+        to make room, not the hint)."""
+        text = ("a" * 40 + "\n") * 10  # 410 bytes, 10 lines
+        out = truncate_output(text, 200, 100, hint="narrow me")
+        assert len(out.encode("utf-8")) <= 100
+        assert "hint: narrow me" in out
+        assert "byte cap of 100 reached" in out
+
     def test_utf8_bytes_not_chars(self):
         text = ("é" * 30 + "\n") * 5  # é is 2 bytes in UTF-8
         out = truncate_output(text, 200, 100)
@@ -490,6 +519,25 @@ class TestJsonOutput:
         parsed = json.loads(out)  # must not raise
         assert parsed["truncated"]["reason"] == "bytes"
         assert parsed["truncated"]["shown"] <= parsed["truncated"]["total"]
+
+    def test_hint_in_truncated_when_bytes_cap(self):
+        """E5: hint lands inside the truncated object when capped."""
+        data = {"items": [{"repo": f"owner/repo{i}", "branch": "main"} for i in range(50)]}
+        out = json_output(data, 800, hint="use filter=<glob> to narrow")
+        parsed = json.loads(out)
+        assert parsed["truncated"]["hint"] == "use filter=<glob> to narrow"
+
+    def test_hint_absent_without_arg(self):
+        """E5: no hint arg -> no hint key even when truncated."""
+        data = {"items": [{"repo": "o/r", "branch": "main"} for _ in range(50)]}
+        out = json_output(data, 800)
+        assert "hint" not in json.loads(out)["truncated"]
+
+    def test_hint_absent_when_not_truncated(self):
+        """E5: not truncated -> no truncated object at all, hint ignored."""
+        out = json_output({"repo": "o/r"}, 20480, hint="any")
+        assert "truncated" not in json.loads(out)
+        assert json.loads(out) == {"repo": "o/r"}
 
     def test_byte_cap_updates_truncated_and_drops_items(self):
         data = {"items": [{"repo": f"owner/repo{i}", "branch": "main"} for i in range(50)]}

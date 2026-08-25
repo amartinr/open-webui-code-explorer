@@ -349,12 +349,14 @@ class TestShowCommit:
         assert "util.py" not in out
 
     async def test_stat_respects_byte_cap(self, repos_path, history_repo):
-        """E1: stat output is still capped; the marker appears when capped."""
+        """E1+E5: stat output is capped; the truncation marker (and hint) are
+        present when capped."""
         tools = await clone_source(repos_path, history_repo)
-        tools.valves.max_bytes = 100
+        tools.valves.max_bytes = 200
         out = await tools.cexp_show_commit("testowner/testrepo", "v1.0.0", stat=True)
-        assert len(out.encode("utf-8")) <= 100
         assert "truncated" in out
+        assert "hint:" in out  # E5: raw-text tools append a hint line
+        assert len(out.encode("utf-8")) <= 200
 
     async def test_stat_invalid_commit_errors(self, repos_path, history_repo):
         """E1: invalid commit still errors with stat=True."""

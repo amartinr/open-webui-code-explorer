@@ -117,7 +117,9 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path, git_daemon):
     out = await tools.cexp_list_files("o/r")
     result = json.loads(out)
     assert len(result["items"]) == 2  # max_results=2 injected by the admin
-    assert result["truncated"] == {"shown": 2, "total": 3}
+    assert result["truncated"]["shown"] == 2
+    assert result["truncated"]["total"] == 3
+    assert isinstance(result["truncated"].get("hint"), str)  # E5
 
     # The same injection flow for the Repos script: clone a second repo so
     # max_results=1 actually truncates.
@@ -130,7 +132,9 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path, git_daemon):
     out = await repos_tools2.cexp_list_repos()
     result = json.loads(out)
     assert len(result["items"]) == 1
-    assert result["truncated"] == {"shown": 1, "total": 2}
+    assert result["truncated"]["shown"] == 1
+    assert result["truncated"]["total"] == 2
+    assert isinstance(result["truncated"].get("hint"), str)  # E5
 
 
 def test_combined_script_loads_and_discovers_all_tools():

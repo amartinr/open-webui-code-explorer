@@ -812,13 +812,15 @@ def resolve_path(repo: str, path: Optional[str], repos_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def truncate_output(text: str, max_lines: int, max_bytes: int) -> str:
+def truncate_output(text: str, max_lines: int, max_bytes: int, hint: Optional[str] = None) -> str:
     """Cap `text` by lines and bytes; append a truncation marker when cut.
 
     Whichever cap (lines or bytes) is hit first truncates. The marker always
     tells the agent the output is incomplete: line caps report `showing N of
     M lines`; byte-only caps report bytes (a bare `showing N of M` would be
-    misleading when the line cap did not bind).
+    misleading when the line cap did not bind). When `hint` is given (a
+    tool-specific "how to narrow" suggestion) it is appended after the marker
+    on its own line; default None keeps the output unchanged.
     """
     text = text or ""
     total_lines = len(text.splitlines())
@@ -828,15 +830,20 @@ def truncate_output(text: str, max_lines: int, max_bytes: int) -> str:
     if total_lines > max_lines:
         cut = "\n".join(text.splitlines()[:max_lines])
         marker = "... (truncated: showing {} of {} lines)".format(max_lines, total_lines)
+        if hint:
+            marker += "\nhint: " + hint
         candidate = cut + "\n" + marker
         if len(candidate.encode("utf-8")) <= max_bytes:
             return candidate
+        # The hint itself must survive the byte cap: cut the content first.
         budget = max_bytes - len(marker.encode("utf-8")) - 1
         return _trim_bytes(cut, max(0, budget)) + "\n" + marker
     # Only the byte cap binds.
     marker = "... (truncated: byte cap of {} reached; showing first {} of {} bytes)".format(
         max_bytes, max_bytes, total_bytes
     )
+    if hint:
+        marker += "\nhint: " + hint
     budget = max_bytes - len(marker.encode("utf-8")) - 1
     return _trim_bytes(text, max(0, budget)) + "\n" + marker
 
@@ -850,7 +857,7 @@ def _trim_bytes(text: str, budget: int) -> str:
     return text
 
 
-def json_output(data: dict, max_bytes: int) -> str:
+def json_output(data: dict, max_bytes: int, hint: Optional[str] = None) -> str:
     """Serialize `data` as a single valid JSON object, byte-capped.
 
     Structured tools return JSON (DESIGN.md §6, §9.3). The item cap
@@ -858,9 +865,15 @@ def json_output(data: dict, max_bytes: int) -> str:
     the hard byte cap while keeping the JSON valid: it tries indented output
     first, then compact, then drops trailing `items` entries (updating
     `truncated` metadata) until it fits. The result is always valid JSON.
+    When `hint` is given it is added inside the `truncated` object (whether
+    capped by max_results or by bytes), a tool-specific "how to narrow"
+    suggestion; default None keeps the output shape unchanged.
     """
     def _encode(indent: Optional[int]) -> str:
         return json.dumps(data, ensure_ascii=False, indent=indent)
+
+    if hint and isinstance(data.get("truncated"), dict) and "hint" not in data["truncated"]:
+        data["truncated"]["hint"] = hint
 
     text = _encode(2)
     if len(text.encode("utf-8")) <= max_bytes:
@@ -872,6 +885,8 @@ def json_output(data: dict, max_bytes: int) -> str:
     if isinstance(items, list) and items:
         total = (data.get("truncated") or {}).get("total", len(items))
         data["truncated"] = {"shown": len(items), "total": total, "reason": "bytes"}
+        if hint:
+            data["truncated"]["hint"] = hint
         while items and len(_encode(None).encode("utf-8")) > max_bytes:
             items.pop()
             data["truncated"]["shown"] = len(items)

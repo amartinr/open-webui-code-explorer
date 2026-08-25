@@ -2,7 +2,7 @@
 title: Code Explorer - Files & Search
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.1.0
+version: 1.2.0
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
 required_open_webui_version: 0.9.6
@@ -112,7 +112,11 @@ class Tools:
             rel = str(base.relative_to(root))
             ok = type != "dir" and glob_match(rel, includes, excludes)
             items = [{"path": rel, "kind": "file"}] if ok else []
-            return json_output({"items": items}, self.valves.max_bytes)
+            return json_output(
+                {"items": items},
+                self.valves.max_bytes,
+                hint="use filter=<glob> to narrow, or raise the max_results Valve",
+            )
 
         items = []
         if base.is_dir():
@@ -131,7 +135,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use filter=<glob> or a narrower path to reduce the listing, or raise the max_results Valve"
+        )
 
     async def _list_files_at_ref(
         self,
@@ -240,7 +246,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use filter=<glob>, a narrower path, or recursive/max_depth to control the listing"
+        )
 
     # ------------------------------------------------------------------
     # cexp_read_file
@@ -333,7 +341,12 @@ class Tools:
         if range_total <= MAX_INLINE_LINES:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = list(itertools.islice(f, start_ - 1, end_))
-            return truncate_output("".join(lines), self.valves.max_lines, self.valves.max_bytes)
+            return truncate_output(
+                "".join(lines),
+                self.valves.max_lines,
+                self.valves.max_bytes,
+                hint="use start=<line> and end=<line> to read a narrower range",
+            )
 
         # Large range: read only the lines that will be shown, then cap.
         shown = min(range_total, self.valves.max_lines)
@@ -344,6 +357,7 @@ class Tools:
         result = text + marker
         if len(result.encode("utf-8")) > self.valves.max_bytes:
             bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
+            bmarker += "\nhint: use start=<line> and end=<line> to read a narrower range"
             budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
             result = _trim_bytes(text, budget) + bmarker
         return result
@@ -465,6 +479,7 @@ class Tools:
                 "".join(lines[start_ - 1 : end_]),
                 self.valves.max_lines,
                 self.valves.max_bytes,
+                hint="use start=<line> and end=<line> to read a narrower range",
             )
 
         # Large range: show the first max_lines lines, then a marker.
@@ -474,6 +489,7 @@ class Tools:
         result = head + marker
         if len(result.encode("utf-8")) > self.valves.max_bytes:
             bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
+            bmarker += "\nhint: use start=<line> and end=<line> to read a narrower range"
             budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
             result = _trim_bytes(head, budget) + bmarker
         return result
@@ -569,7 +585,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<dir>, filter=<glob>, or files_only/count_only to reduce the result set"
+        )
 
     # ------------------------------------------------------------------
     # cexp_search_symbol
@@ -651,7 +669,9 @@ class Tools:
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
-        return json_output(data, self.valves.max_bytes)
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<dir> or filter=<glob> to narrow, or raise the max_results Valve"
+        )
 
     # ------------------------------------------------------------------
     # shared internals
