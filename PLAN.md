@@ -6,7 +6,9 @@
 > **Version:** bump tool scripts to `1.2.0` when this batch lands. The version lives in **four** places: the frontmatter of the three `templates/*.py.tpl` AND `ALL_FRONTMATTER` in `build.py` (the combined script).
 > **Hard rule:** every parameter added below is **backward-compatible** (default preserves current behaviour). Existing tests must stay green; new behaviour gets new tests. Where a change legitimately alters an existing test's exact assertion (noted at the step), update that assertion in the same commit.
 
-**Discipline (unchanged):** each step ends with `python build.py` (dist regenerated and committed), `python -m pytest` (all green), commit (Conventional Commits: `feat:` for new tools/parameters, `fix:`/`hardening:` for S-steps, `docs:` for docs), push, then control returns to the user.
+**Discipline (unchanged):** each step ends with `python build.py` (dist regenerated and committed), `python -m pytest` (all green), commit (Conventional Commits: `feat:` for new tools/parameters, `hardening:` for S-steps, `docs:` for docs), push, then control returns to the user.
+
+**Execution order (revised):** the phases below are labelled by category, not by order of implementation. **Phase 4 (S1–S3, security hardening) executes FIRST** — it is cheap, isolated, and closes live gaps (S1: `fetch`/`pull` never validate the remote origin, so a tampered `.git/config` reaches git; S2: hostile `GIT_*` env vars are not purged; S3: clone has no host restriction). Only then Phase 1 (cheap wins), Phase 2 (UX), Phase 3 (new capability). The original draft's "do before any shared deployment" was a *deployment* priority; this is the *implementation* priority.
 
 ---
 
@@ -14,19 +16,19 @@
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | E1: `cexp_show_commit` + `stat` (template + tests) | ☐ |
-| 2 | E2: `cexp_list_commits` + `first_parent` (template + tests) | ☐ |
-| 3 | E3: `cexp_search_text` + `files_only`/`count_only` (template + tests) | ☐ |
-| 4 | E4: `author`/`date` fields in `cexp_list_commits` (template + tests) | ☐ |
-| 5 | E5: truncation hint (common.py + all tools + tests) | ☐ |
-| 6 | E6: "repo not found" suggests existing clones (common.py helper + templates + tests) | ☐ |
-| 7 | E7: `cexp_search_history` pickaxe tool (template + tests) | ☐ |
-| 8 | E8: `cexp_list_branches` + `merged` (template + tests) | ☐ |
-| 9 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 13 -> 14) | ☐ |
-| 10 | E10: `size` field in `cexp_list_repos` (template + tests) | ☐ |
-| 11 | S1: re-validate remote origin before fetch/pull (template + tests) | ☐ |
-| 12 | S2: purge hostile `GIT_*` from subprocess env (common.py + tests) | ☐ |
-| 13 | S3: `allowed_hosts` Valve on the Repos script (common.py + template + Valves contract + tests) | ☐ |
+| 1 | S1: re-validate remote origin before fetch/pull (template + tests) | ☐ |
+| 2 | S2: purge hostile `GIT_*` from subprocess env (common.py + tests) | ☐ |
+| 3 | S3: `allowed_hosts` Valve on the Repos script (common.py + template + Valves contract + tests) | ☐ |
+| 4 | E1: `cexp_show_commit` + `stat` (template + tests) | ☐ |
+| 5 | E2: `cexp_list_commits` + `first_parent` (template + tests) | ☐ |
+| 6 | E3: `cexp_search_text` + `files_only`/`count_only` (template + tests) | ☐ |
+| 7 | E4: `author`/`date` fields in `cexp_list_commits` (template + tests) | ☐ |
+| 8 | E5: truncation hint (common.py + all tools + tests) | ☐ |
+| 9 | E6: "repo not found" suggests existing clones (common.py helper + templates + tests) | ☐ |
+| 10 | E7: `cexp_search_history` pickaxe tool (template + tests) | ☐ |
+| 11 | E8: `cexp_list_branches` + `merged` (template + tests) | ☐ |
+| 12 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 13 -> 14) | ☐ |
+| 13 | E10: `size` field in `cexp_list_repos` (template + tests) | ☐ |
 | 14 | Docs (`DESIGN.md` §6/§7, `README.md`, `META_MODEL_PROMPT.md`) + version bump `1.2.0` (4 places) | ☐ |
 | 15 | Regenerate `dist/`, full suite, final checks (grep for `import common` / markers, combined tool count) | ☐ |
 
@@ -34,7 +36,7 @@ Each step ends with: `python build.py` (dist/ is generated and committed), `pyth
 
 ---
 
-## Phase 1 — cheap wins (do first)
+## Phase 1 — cheap wins (after the security phase)
 
 ### E1. `cexp_show_commit(stat: bool = False)` — Commits script
 
@@ -149,7 +151,7 @@ Note: this is the **14th public tool**. `tests/test_valves.py::test_combined_scr
 
 ---
 
-## Phase 4 — security hardening (cheap; do before any shared deployment)
+## Phase 4 — security hardening (executed FIRST; cheap and closes live gaps)
 
 ### S1. Re-validate the remote origin before `fetch`/`pull`
 
