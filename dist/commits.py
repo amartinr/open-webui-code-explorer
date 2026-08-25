@@ -75,6 +75,22 @@ HEADLESS_ENV: Dict[str, str] = {
     "LC_ALL": "C",  # stable, English, non-localized output
 }
 
+# GIT_* vars that can point git at a DIFFERENT repository, object store, ssh
+# binary, index, or namespace than the one the tool resolved. They are popped
+# from the subprocess environment in _headless_env (S2): the overrides above
+# set the policy; these remove the hijack surface.
+PURGED_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_SSH",
+    "GIT_SSH_VARIANT",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_COMMON_DIR",
+)
+
 _REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 _REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/+-]*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -500,7 +516,11 @@ def _headless_env() -> Dict[str, str]:
     env = dict(os.environ)
     for key, value in HEADLESS_ENV.items():
         env[key] = value
-    env.pop("GIT_ASKPASS", None)  # no askpass helper may launch a prompt
+    # No askpass helper may launch a prompt (must be unset, not "").
+    env.pop("GIT_ASKPASS", None)
+    # No GIT_* var may redirect git to a different repo/ssh/index/namespace.
+    for key in PURGED_GIT_ENV_VARS:
+        env.pop(key, None)
     return env
 
 

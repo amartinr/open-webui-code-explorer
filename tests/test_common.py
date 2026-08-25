@@ -352,6 +352,49 @@ class TestRunAllowed:
         assert res.returncode == 1  # key not found: hostile config was ignored
         assert "PWNED" not in res.stdout
 
+    async def test_hostile_git_dir_ignored(self, tmp_path, monkeypatch):
+        """S2: GIT_DIR may not redirect git to a different repository. Set to a
+        nonexistent path it would be honored only if the purge failed; git
+        resolves the real repo via -C instead."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        res = await run_allowed(git_args("-C", str(repo), "init", "-b", "main"), 30)
+        assert res.returncode == 0, res.stderr
+
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "hostile"))  # not a git dir
+        res = await run_allowed(git_args("-C", str(repo), "rev-parse", "--git-dir"), 10)
+        assert res.returncode == 0, res.stderr  # would fail if GIT_DIR were honored
+        assert res.stdout.strip().endswith(".git")
+
+    async def test_hostile_git_ssh_ignored(self, tmp_path, monkeypatch):
+        """S2: GIT_SSH may not swap in a different ssh binary. An evil script
+        that writes a marker and exits 0 must never run; the real ssh
+        (BatchMode, overridden GIT_SSH_COMMAND) fails fast against a closed
+        port instead."""
+        marker = tmp_path / "pwned"
+        evil = tmp_path / "evil-ssh"
+        evil.write_text(f"#!/bin/sh\necho PWNED >> {marker}\nexit 0\n")
+        evil.chmod(0o755)
+        monkeypatch.setenv("GIT_SSH", str(evil))
+
+        res = await run_allowed(
+            git_args("ls-remote", "ssh://git@127.0.0.1:1/o/r.git"), 30
+        )
+        assert not marker.exists()  # the evil script never ran
+        assert res.returncode != 0  # real ssh failed: no server on port 1
+
+    def test_headless_env_purges_hostile_git_vars(self, monkeypatch):
+        """S2 unit check: every PURGED_GIT_ENV_VAR set in the ambient
+        environment is removed from the subprocess environment; the policy
+        overrides (HEADLESS_ENV) are still applied."""
+        for key in common.PURGED_GIT_ENV_VARS:
+            monkeypatch.setenv(key, f"hostile-{key}")
+        env = common._headless_env()
+        for key in common.PURGED_GIT_ENV_VARS:
+            assert key not in env, f"{key} leaked into the subprocess env"
+        assert env.get("GIT_TERMINAL_PROMPT") == "0"
+        assert env.get("GIT_SSH_COMMAND") == "ssh -o BatchMode=yes"
+
     async def test_git_failure_reports_nonzero_returncode(self, tmp_path):
         res = await run_allowed(git_args("-C", str(tmp_path), "rev-parse", "--git-dir"), 10)
         assert res.returncode != 0
