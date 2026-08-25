@@ -320,6 +320,25 @@ def _scan_encoding(path: Path, chunk: int = 65536) -> Optional[str]:
     return None
 
 
+def _scan_encoding_bytes(data: bytes, chunk: int = 65536) -> Optional[str]:
+    """Binary/UTF-8 scan of an in-memory blob (DESIGN.md §12.1 read-at-ref):
+    "binary" if a null byte appears anywhere, "invalid_utf8" if strict UTF-8
+    decoding fails anywhere, None if the data is valid UTF-8 text without null
+    bytes. Mirrors `_scan_encoding` (same incremental-decoder semantics, same
+    boundaries) for blob content fetched from git instead of the filesystem.
+    """
+    if b"\x00" in data:
+        return "binary"
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        for i in range(0, len(data), chunk):
+            dec.decode(data[i : i + chunk])
+        dec.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return "invalid_utf8"
+    return None
+
+
 def _is_binary(sample: bytes) -> bool:
     """True iff the sample looks binary: NUL bytes or mostly non-text."""
     if b"\x00" in sample:
@@ -1156,11 +1175,16 @@ class Tools:
         path: str,
         start: Optional[int] = None,
         end: Optional[int] = None,
+        ref: Optional[str] = None,
     ) -> str:
         """Read a text file, or a line range of it, from a repository.
 
         Use to inspect file contents. Example: cexp_read_file("owner/repo",
         "src/main.py"). Accepts an optional 1-based start/end line range.
+        With ref, reads the file as it exists at that branch/tag/commit from
+        the local git object store (no working-tree changes, no network);
+        e.g. cexp_read_file("owner/repo", "src/main.py", ref="v1.0.0",
+        start=10, end=20) reads the exact lines of the released version.
         Returns raw text (no line numbers, no headers); a trailing marker is
         appended when output is truncated. Binary and non-UTF-8 files are
         rejected with a clear error. Note: the output is raw data - when
@@ -1169,11 +1193,12 @@ class Tools:
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: File path INSIDE the repository, relative to its root; do NOT include the "<owner>/<name>" prefix (that belongs in `repo`); always use "/" as separator. Examples: "README.md", "src/main.py", "tests/test_x.py" (required).
+        :param ref: Optional git ref (branch, tag, or commit hash) to read the file at; None (default) reads the working tree. Only plain refs are accepted; revision expressions like HEAD~1 are rejected.
         :param start: Optional 1-based first line to read (inclusive).
         :param end: Optional 1-based last line to read (inclusive).
         """
         try:
-            return await self._read_file(repo, path, start, end)
+            return await self._read_file(repo, path, start, end, ref)
         except Exception as e:
             return error_string(e)
 
@@ -1183,11 +1208,14 @@ class Tools:
         path: str,
         start: Optional[int],
         end: Optional[int],
+        ref: Optional[str],
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
         self._ensure_repo_exists(root, repo)
         file_path = resolve_path(repo, path, repos_path)
+        if ref is not None:
+            return await self._read_file_at_ref(root, file_path, path, ref, start, end)
         if not file_path.exists():
             raise ToolError(f"file not found: {path} in {repo}", kind="not_found")
         if file_path.is_dir():
@@ -1241,6 +1269,136 @@ class Tools:
             bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
             budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
             result = _trim_bytes(text, budget) + bmarker
+        return result
+
+    async def _read_file_at_ref(
+        self,
+        root: Path,
+        file_path: Path,
+        path: str,
+        ref: str,
+        start: Optional[int],
+        end: Optional[int],
+    ) -> str:
+        """Read a file as it exists at a git ref (branch/tag/commit), from the
+        local object store, without touching the working tree (DESIGN.md
+        §12.1). Same binary/UTF-8 detection, line-range math, and truncation
+        markers as the working-tree reader. A bad ref is an Error naming the
+        ref; a path missing at that ref is a Not found."""
+        ref = validate_ref(ref)
+        try:
+            rel = file_path.relative_to(root).as_posix()
+        except ValueError:
+            raise ToolError(f"invalid path: {path!r}")
+
+        # 1. The ref must resolve to a commit (rejects worktree-path fallback
+        #    and blob/tree refs).
+        res = await run_allowed(
+            git_args("-C", str(root), "rev-parse", "--verify", f"{ref}^{{commit}}"),
+            TIMEOUT_SEARCH,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"unknown ref: {ref!r}",
+                cause=trim_cause(res.stderr) or "ref does not exist in this repository",
+            )
+
+        # 2. Object type at <ref>:<path> -> blob, tree (directory), or missing.
+        res = await run_allowed(
+            git_args("-C", str(root), "cat-file", "-t", f"{ref}:{rel}"),
+            TIMEOUT_SEARCH,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"path not found at {ref}: {path}",
+                kind="not_found",
+                cause=trim_cause(res.stderr),
+            )
+        objtype = res.stdout.strip()
+        if objtype == "tree":
+            raise ToolError(f"{path} is a directory, not a file")
+        if objtype != "blob":
+            raise ToolError(f"not a file at {ref}: {path}", kind="not_found")
+
+        # 3. Size guard, mirroring the working-tree reader's MAX_READ_BYTES.
+        res = await run_allowed(
+            git_args("-C", str(root), "cat-file", "-s", f"{ref}:{rel}"),
+            TIMEOUT_SEARCH,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"path not found at {ref}: {path}",
+                kind="not_found",
+                cause=trim_cause(res.stderr),
+            )
+        size = int(res.stdout.strip() or "0")
+        if size > MAX_READ_BYTES:
+            raise ToolError(
+                f"file too large: {path} ({size} bytes); maximum supported is {MAX_READ_BYTES}"
+            )
+
+        # 4. Fetch the raw blob (bytes) and run the SAME binary/UTF-8 scan as
+        #    the working-tree reader (text=False keeps the bytes intact).
+        res = await run_allowed(
+            git_args("-C", str(root), "cat-file", "blob", f"{ref}:{rel}"),
+            TIMEOUT_SEARCH,
+            text=False,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"cannot read {path} at {ref}",
+                cause=trim_cause(res.stderr),
+            )
+        data = res.stdout
+        bad = _scan_encoding_bytes(data)
+        if bad == "binary":
+            raise ToolError(f"binary file not supported: {path} (binary files are rejected)")
+        if bad == "invalid_utf8":
+            raise ToolError(f"not a UTF-8 text file: {path} (only UTF-8 text is supported)")
+
+        return self._render_lines(_decode_text(data), start, end)
+
+    def _render_lines(self, text: str, start: Optional[int], end: Optional[int]) -> str:
+        """Shared 1-based line-range math and truncation markers over an
+        in-memory text (ref reads). Mirrors the working-tree reader's range
+        behaviour exactly; universal-newline handling is applied first so line
+        counts match open()'s newline=None semantics."""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        total = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+        start_ = start if start is not None else 1
+        if start_ < 1:
+            raise ToolError(f"start must be >= 1, got {start_}")
+        if total == 0:
+            # Empty file: nothing to read. A default start (1) is fine; an
+            # explicit start > 1 is out of range.
+            if start is not None and start > 1:
+                raise ToolError(f"start {start} is beyond the end of the file (0 lines)")
+            return ""
+        if start_ > total:
+            raise ToolError(f"start {start_} is beyond the end of the file ({total} lines)")
+        end_ = end if end is not None else total
+        if end_ < start_:
+            raise ToolError(f"end {end_} is before start {start_}")
+        end_ = min(end_, total)
+        range_total = end_ - start_ + 1
+
+        lines = text.splitlines(keepends=True)
+        if range_total <= MAX_INLINE_LINES:
+            return truncate_output(
+                "".join(lines[start_ - 1 : end_]),
+                self.valves.max_lines,
+                self.valves.max_bytes,
+            )
+
+        # Large range: show the first max_lines lines, then a marker.
+        shown = min(range_total, self.valves.max_lines)
+        head = "".join(lines[start_ - 1 : start_ - 1 + shown])
+        marker = f"\n... (truncated: showing {shown} of {range_total} lines)"
+        result = head + marker
+        if len(result.encode("utf-8")) > self.valves.max_bytes:
+            bmarker = f"\n... (truncated: byte cap of {self.valves.max_bytes} reached)"
+            budget = max(0, self.valves.max_bytes - len(bmarker.encode("utf-8")) - 1)
+            result = _trim_bytes(head, budget) + bmarker
         return result
 
     async def cexp_search_text(

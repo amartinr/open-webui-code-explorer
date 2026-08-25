@@ -318,6 +318,25 @@ def _scan_encoding(path: Path, chunk: int = 65536) -> Optional[str]:
     return None
 
 
+def _scan_encoding_bytes(data: bytes, chunk: int = 65536) -> Optional[str]:
+    """Binary/UTF-8 scan of an in-memory blob (DESIGN.md §12.1 read-at-ref):
+    "binary" if a null byte appears anywhere, "invalid_utf8" if strict UTF-8
+    decoding fails anywhere, None if the data is valid UTF-8 text without null
+    bytes. Mirrors `_scan_encoding` (same incremental-decoder semantics, same
+    boundaries) for blob content fetched from git instead of the filesystem.
+    """
+    if b"\x00" in data:
+        return "binary"
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        for i in range(0, len(data), chunk):
+            dec.decode(data[i : i + chunk])
+        dec.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return "invalid_utf8"
+    return None
+
+
 def _is_binary(sample: bytes) -> bool:
     """True iff the sample looks binary: NUL bytes or mostly non-text."""
     if b"\x00" in sample:

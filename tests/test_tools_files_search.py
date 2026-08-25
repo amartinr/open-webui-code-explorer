@@ -344,6 +344,111 @@ class TestReadFile:
 
 
 # ---------------------------------------------------------------------------
+# cexp_read_file at a ref (DESIGN.md §12.1)
+# ---------------------------------------------------------------------------
+
+
+class TestReadFileAtRef:
+    async def test_ref_defaults_to_working_tree_parity(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        no_ref = await tools.cexp_read_file("testowner/testrepo", "hello.py")
+        at_main = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="main")
+        assert no_ref == at_main == HELLO_PY
+
+    async def test_read_at_tag_differs_from_working_tree(self, repos_path, source_repo):
+        """Tag the first commit, then advance the clone with a second commit
+        that changes hello.py: ref reads must return the tagged (old) content
+        while the working tree has the new content."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        await run_git(clone, "tag", "v1.0.0")
+        (clone / "hello.py").write_text("def hello():\n    return 'new'\n")
+        await run_git(clone, "add", "hello.py")
+        await run_git(clone, *IDENT, "commit", "-m", "change hello")
+
+        out_old = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="v1.0.0")
+        assert out_old == HELLO_PY
+        out_new = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="main")
+        assert out_new == "def hello():\n    return 'new'\n"
+        # working tree == main (the checkout advanced with the commit)
+        assert await tools.cexp_read_file("testowner/testrepo", "hello.py") == out_new
+
+    async def test_line_range_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="main", start=1, end=1)
+        assert out == "def hello():\n"
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="main", start=5, end=6)
+        assert out == "def world(x):\n    return x * 2\n"
+
+    async def test_unknown_ref_error_names_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref="v9.9.9")
+        assert out.startswith("Error:")
+        assert "v9.9.9" in out
+
+    async def test_missing_path_at_ref_not_found(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_read_file("testowner/testrepo", "nope.py", ref="main")
+        assert out.startswith("Not found:")
+
+    async def test_directory_at_ref_rejected(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_read_file("testowner/testrepo", "sub", ref="main")
+        assert out.startswith("Error:")
+        assert "directory" in out
+
+    async def test_binary_blob_at_ref_rejected(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_read_file("testowner/testrepo", "data.bin", ref="main")
+        assert out.startswith("Error:")
+        assert "binary" in out.lower()
+
+    async def test_invalid_utf8_blob_at_ref_rejected(self, repos_path, source_repo):
+        """Invalid UTF-8 in the blob must be rejected with the same message as
+        the working-tree reader (DESIGN.md §12.1: same binary/UTF-8 scan)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "bad.txt").write_bytes(b"B" * 9000 + b"\xff\xfe")
+        await run_git(clone, "add", "bad.txt")
+        await run_git(clone, *IDENT, "commit", "-m", "add bad")
+        out = await tools.cexp_read_file("testowner/testrepo", "bad.txt", ref="main")
+        assert out.startswith("Error:")
+        assert "UTF-8" in out
+
+    async def test_utf8_multibyte_at_ref_preserved(self, repos_path, source_repo):
+        """Non-ASCII content must survive the blob read byte-for-byte (the
+        reason text=False exists: locale decoding would corrupt it)."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        (clone / "acc.txt").write_text("café\nmañana\n", encoding="utf-8")
+        await run_git(clone, "add", "acc.txt")
+        await run_git(clone, *IDENT, "commit", "-m", "add accents")
+        out = await tools.cexp_read_file("testowner/testrepo", "acc.txt", ref="main")
+        assert out == "café\nmañana\n"
+
+    async def test_truncation_marker_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        tools.valves.max_lines = 5
+        out = await tools.cexp_read_file("testowner/testrepo", "big.txt", ref="main")
+        lines = out.splitlines()
+        assert lines[0] == "line0000"
+        assert any("truncated" in l for l in lines)
+        assert any("of 6000 lines" in l for l in lines)
+
+    async def test_malicious_refs_rejected_before_git(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        for bad in ["--all", "HEAD~1", "a..b", "main^"]:
+            out = await tools.cexp_read_file("testowner/testrepo", "hello.py", ref=bad)
+            assert out.startswith("Error:"), bad
+            assert "invalid ref" in out, bad
+
+    async def test_repo_not_cloned(self, repos_path):
+        tools = make_tools(repos_path)
+        out = await tools.cexp_read_file("o/r", "x.py", ref="main")
+        assert out.startswith("Not found:")
+
+
+# ---------------------------------------------------------------------------
 # cexp_search_text
 # ---------------------------------------------------------------------------
 
