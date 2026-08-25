@@ -1,3 +1,4 @@
+import asyncio
 """Unit tests for common.py: the shared, security-critical helpers (§5.6)."""
 
 import json
@@ -392,14 +393,35 @@ class TestRunAllowed:
             await run_allowed(git_args("--version"), 10)
 
     async def test_timeout_becomes_timed_out_error(self, monkeypatch):
-        def fake_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+        """S4: on timeout the child is killed and `Timed out:` is returned.
+        A fake slow child (monkeypatched create_subprocess_exec) proves the
+        kill path runs; the observable contract is unchanged."""
+        killed = []
 
-        monkeypatch.setattr(common.subprocess, "run", fake_run)
+        class FakeProc:
+            returncode = None
+
+            async def communicate(self, input=None):
+                await asyncio.sleep(60)
+
+            async def wait(self):
+                self.returncode = -9
+
+            def terminate(self):
+                killed.append("terminate")
+
+            def kill(self):
+                killed.append("kill")
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(common.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
         with pytest.raises(ToolError) as excinfo:
-            await run_allowed(git_args("--version"), 1)
+            await run_allowed(git_args("--version"), 0.01)
         assert excinfo.value.kind == "timed_out"
-        assert "timed out after 1s" in str(excinfo.value)
+        assert "timed out after 0.01s" in str(excinfo.value)
+        assert killed  # the kill helper ran
 
     async def test_git_never_reads_global_config(self, tmp_path, monkeypatch):
         # A user/global gitconfig must never be honored (DESIGN.md §9.7): the
@@ -469,6 +491,52 @@ class TestRunAllowed:
         assert isinstance(res.stdout, bytes)
         # Deterministic git-computed id of the stdin bytes (40 hex chars).
         assert res.stdout.strip() == b"b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0"
+
+    async def test_kill_process_kills_real_slow_child(self):
+        """S4: _kill_process reaps a real slow child (no zombie left)."""
+        proc = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        assert proc.returncode is None
+        await common._kill_process(proc)
+        # Reaped: wait() returns without hanging and sets the returncode.
+        rc = await asyncio.wait_for(proc.wait(), 5)
+        assert proc.returncode is not None
+        assert rc is not None
+
+    async def test_cancellation_kills_child_and_propagates(self, monkeypatch):
+        """S4: cancelling the task that awaits a slow git kills the child and
+        re-raises CancelledError (never converted into Error: or swallowed)."""
+        reached_communicate = asyncio.Event()
+        terminated = []
+
+        class FakeProc:
+            returncode = None
+
+            async def communicate(self, input=None):
+                reached_communicate.set()
+                await asyncio.sleep(60)
+
+            async def wait(self):
+                self.returncode = -9
+
+            def terminate(self):
+                terminated.append("terminate")
+
+            def kill(self):
+                terminated.append("kill")
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(common.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        task = asyncio.create_task(run_allowed(git_args("--version"), 60))
+        await asyncio.wait_for(reached_communicate.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert terminated  # the child was killed
+        assert task.cancelled()
 
 
 # ---------------------------------------------------------------------------

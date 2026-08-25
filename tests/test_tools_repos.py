@@ -217,6 +217,40 @@ class TestCloneRepo:
         assert out.startswith("Error:")
         assert not (repos_path / "o" / "r").exists()
 
+    async def test_cancelled_clone_cleans_partial_dir_and_second_clone_works(
+        self, repos_path, source_repo, monkeypatch
+    ):
+        """S4: cancelling the clone coroutine (while git runs) must kill the
+        child, clean the partial directory, re-raise CancelledError, and let
+        a second cexp_clone_repo on the same repo succeed."""
+        import dist.repos as repos_mod
+
+        tools = make_tools(repos_path)
+        url = src_url(source_repo)
+
+        started = asyncio.Event()
+        real_run = repos_mod.run_allowed
+
+        async def slow_run(argv, timeout, **kwargs):
+            if "clone" in argv:
+                started.set()
+                await asyncio.sleep(60)  # the clone never finishes
+            return await real_run(argv, timeout, **kwargs)
+
+        monkeypatch.setattr(repos_mod, "run_allowed", slow_run)
+        task = asyncio.create_task(tools.cexp_clone_repo("o/r", url=url))
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        monkeypatch.undo()
+        # No partial directory is left blocking the namespace.
+        assert not (repos_path / "o" / "r").exists()
+        # A second clone (with the real runner) succeeds.
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert not out.startswith("Error:"), out
+        assert (repos_path / "o" / "r" / ".git").exists()
+
 
 # ---------------------------------------------------------------------------
 # Clone URL validation & collision policy

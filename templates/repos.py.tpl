@@ -118,7 +118,14 @@ class Tools:
             )
 
         root.parent.mkdir(parents=True, exist_ok=True)
-        res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
+        try:
+            res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
+        except asyncio.CancelledError:
+            # S4: a cancelled clone must not leave a partial directory
+            # blocking <owner>/<name>. Reuse the failed-clone cleanup, then
+            # re-raise so the cancellation keeps propagating.
+            self._cleanup_failed_clone(root)
+            raise
         if res.returncode != 0:
             self._cleanup_failed_clone(root)
             raise ToolError(f"clone failed: {repo}", cause=trim_cause(res.stderr))
@@ -137,10 +144,15 @@ class Tools:
             else:
                 ref_arg = ref
                 resolved_ref = ref
-            res = await run_allowed(
-                git_args("-C", str(root), "-c", "advice.detachedHead=false", "checkout", "--quiet", ref_arg),
-                TIMEOUT_SEARCH,
-            )
+            try:
+                res = await run_allowed(
+                    git_args("-C", str(root), "-c", "advice.detachedHead=false", "checkout", "--quiet", ref_arg),
+                    TIMEOUT_SEARCH,
+                )
+            except asyncio.CancelledError:
+                # S4: same cleanup for a cancelled post-clone checkout.
+                self._cleanup_failed_clone(root)
+                raise
             if res.returncode != 0:
                 raise ToolError(
                     f"clone succeeded but checkout of ref {ref_arg!r} failed",

@@ -524,6 +524,31 @@ def _headless_env() -> Dict[str, str]:
     return env
 
 
+async def _kill_process(proc: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess in stages so no zombie is left (S4).
+
+    Graceful terminate -> short grace period -> hard kill -> reap. Safe to
+    call on an already-exited process (each step absorbs the failure). Used
+    by run_allowed on both timeout and cancellation.
+    """
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), 1.0)
+        return
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await proc.wait()
+    except ProcessLookupError:
+        pass
+
+
 async def run_allowed(
     argv: List[str], timeout: int, *, text: bool = True, input: Optional[bytes] = None
 ) -> CommandResult:
@@ -531,8 +556,11 @@ async def run_allowed(
 
     - argv[0] MUST be one of ALLOWED_BINARIES (no arbitrary commands).
     - No shell: argument arrays only (shell=False).
-    - Runs in a worker thread so the blocking call never stalls Open WebUI's
-      event loop.
+    - Runs the process asynchronously (create_subprocess_exec + communicate)
+      so BOTH the timeout and a task cancellation act on the real process
+      (S4): on timeout the process is killed and `Timed out:` is returned;
+      on CancelledError the process is killed and the exception is
+      re-raised (never swallowed).
     - Uses the fixed headless environment (§9.7) so git can never prompt,
       page, localize, or read user/global config.
     - On timeout raises ToolError(kind="timed_out").
@@ -551,22 +579,38 @@ async def run_allowed(
     if exe is None:
         raise ToolError(f"required binary not found in PATH: {argv[0]}")
     full = [exe, *argv[1:]]
+    env = _headless_env()
     try:
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            full,
-            shell=False,
-            capture_output=True,
-            text=text,
-            timeout=timeout,
-            env=_headless_env(),
-            input=input,
+        proc = await asyncio.create_subprocess_exec(
+            *full,
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
-    except subprocess.TimeoutExpired:
-        raise ToolError(f"timed out after {timeout}s", kind="timed_out")
-    stdout = proc.stdout or (b"" if not text else "")
-    stderr = proc.stderr or (b"" if not text else "")
-    return CommandResult(stdout=stdout, stderr=stderr, returncode=proc.returncode)
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(input=input), timeout
+            )
+        except asyncio.TimeoutError:
+            await _kill_process(proc)
+            raise ToolError(f"timed out after {timeout}s", kind="timed_out")
+        except asyncio.CancelledError:
+            await _kill_process(proc)
+            raise  # cancellation must propagate as BaseException
+    except asyncio.CancelledError:
+        raise  # the spawn itself was cancelled before a process existed
+    if text:
+        return CommandResult(
+            stdout=(stdout_b or b"").decode("utf-8", errors="replace"),
+            stderr=(stderr_b or b"").decode("utf-8", errors="replace"),
+            returncode=proc.returncode,
+        )
+    return CommandResult(
+        stdout=stdout_b or b"",
+        stderr=stderr_b or b"",
+        returncode=proc.returncode,
+    )
 
 
 def git_args(*args: str) -> List[str]:
