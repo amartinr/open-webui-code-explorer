@@ -2,7 +2,7 @@
 title: Code Explorer - Commits
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.0
+version: 1.2.1
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Inspect branches, tags, and commit history of cloned repositories for the meta model. Read-only; uses only the git binary with a headless environment.
 required_open_webui_version: 0.9.6

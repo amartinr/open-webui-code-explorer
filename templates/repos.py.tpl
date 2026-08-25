@@ -2,7 +2,7 @@
 title: Code Explorer - Repos
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.0
+version: 1.2.1
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: Clone, fetch, pull, and list code repositories for the meta model. Read-only with respect to source code; writes happen only inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
