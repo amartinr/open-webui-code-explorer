@@ -179,6 +179,16 @@ class TestCloneRepo:
         assert out.startswith("Error:")
         assert "cause:" in out
 
+    async def test_clone_malicious_ref_rejected_before_clone(self, repos_path, source_repo):
+        """Option-injection refs and revision expressions must be rejected by
+        validate_ref BEFORE any clone happens (no partial clone left behind)."""
+        tools = make_tools(repos_path)
+        for bad in ["--all", "HEAD~1", "a..b", "main^", "ref:name"]:
+            out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo), ref=bad)
+            assert out.startswith("Error:"), bad
+            assert "invalid ref" in out, bad
+            assert not (repos_path / "o" / "r").exists(), bad
+
     async def test_repo_traversal_rejected(self, repos_path, source_repo):
         tools = make_tools(repos_path)
         for bad in ["../evil", "a/../b", "a/b/c", "repo"]:

@@ -145,7 +145,9 @@ class Tools:
         history. With ref_a and ref_b, shows commits reachable from ref_b but
         not from ref_a (git's ref_a..ref_b range). Capable of narrowing to a
         single file or directory. Returns a JSON object with an items array
-        of {"hash", "subject"} entries (newest first).
+        of {"hash", "subject"} entries (newest first). Only plain
+        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
+        rejected.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: Optional start ref (branch, tag, or commit).
@@ -168,6 +170,10 @@ class Tools:
         self._ensure_repo_exists(root, repo)
         if path is not None:
             resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
+        if ref_a:
+            ref_a = validate_ref(ref_a)
+        if ref_b:
+            ref_b = validate_ref(ref_b)
         args = git_args("-C", str(root), "log", "--oneline", "--no-decorate")
         if ref_a and ref_b:
             args.append(f"{ref_a}..{ref_b}")
@@ -205,7 +211,9 @@ class Tools:
 
         Use to inspect what a specific commit changed. Returns raw git show
         output (commit message, author, date, and the diff), capped by the
-        max_lines/max_bytes Valves with a truncation marker.
+        max_lines/max_bytes Valves with a truncation marker. Only plain
+        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
+        rejected.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param commit: Commit hash or ref (branch, tag) to show (required).
@@ -219,8 +227,7 @@ class Tools:
     async def _show_commit(self, repo: str, commit: str, path: Optional[str]) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        if not commit or not commit.strip():
-            raise ToolError("commit must not be empty")
+        commit = validate_ref(commit)
         if path is not None:
             resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
         args = git_args("-C", str(root), "show", commit)
@@ -249,7 +256,9 @@ class Tools:
         the three-dot (merge-base) diff: shows changes on ref_b since its
         divergence from ref_a. With stat=True, returns the --stat summary
         instead of the full diff. Returns raw git diff output, capped by the
-        max_lines/max_bytes Valves with a truncation marker.
+        max_lines/max_bytes Valves with a truncation marker. Only plain
+        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
+        rejected.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: First ref (branch, tag, or commit) (required).
@@ -272,8 +281,8 @@ class Tools:
     ) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        if not ref_a or not ref_a.strip() or not ref_b or not ref_b.strip():
-            raise ToolError("ref_a and ref_b are required")
+        ref_a = validate_ref(ref_a)
+        ref_b = validate_ref(ref_b)
         if path is not None:
             resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
         args = git_args("-C", str(root), "diff")

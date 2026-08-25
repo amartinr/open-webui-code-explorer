@@ -192,6 +192,17 @@ class TestListCommits:
         out = await tools.cexp_list_commits("testowner/testrepo", path="../evil")
         assert out.startswith("Error:")
 
+    async def test_malicious_refs_rejected(self, repos_path, history_repo):
+        """Option-injection refs and revision expressions must be rejected by
+        validate_ref before reaching git log."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_list_commits("testowner/testrepo", ref_b="--all")
+        assert out.startswith("Error:")
+        assert "invalid ref" in out
+        out = await tools.cexp_list_commits("testowner/testrepo", ref_a="a..b", ref_b="main")
+        assert out.startswith("Error:")
+        assert "invalid ref" in out
+
 
 # ---------------------------------------------------------------------------
 # cexp_show_commit
@@ -222,6 +233,15 @@ class TestShowCommit:
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_show_commit("testowner/testrepo", "   ")
         assert out.startswith("Error:")
+
+    async def test_malicious_commit_rejected(self, repos_path, history_repo):
+        """Option injection (--help) and revision expressions must be rejected
+        by validate_ref before reaching git show."""
+        tools = await clone_source(repos_path, history_repo)
+        for bad in ["--help", "HEAD~1", "main^", "a..b"]:
+            out = await tools.cexp_show_commit("testowner/testrepo", bad)
+            assert out.startswith("Error:"), bad
+            assert "invalid ref" in out, bad
 
     async def test_line_cap(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
@@ -257,6 +277,15 @@ class TestCompareCommits:
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_compare_commits("testowner/testrepo", "", "main")
         assert out.startswith("Error:")
+
+    async def test_malicious_refs_rejected(self, repos_path, history_repo):
+        """Option-injection refs and revision expressions must be rejected by
+        validate_ref before reaching git diff."""
+        tools = await clone_source(repos_path, history_repo)
+        for bad in ["--stat", "HEAD~1", "a..b"]:
+            out = await tools.cexp_compare_commits("testowner/testrepo", bad, "main")
+            assert out.startswith("Error:"), bad
+            assert "invalid ref" in out, bad
 
     async def test_bad_ref_fails_cleanly(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)

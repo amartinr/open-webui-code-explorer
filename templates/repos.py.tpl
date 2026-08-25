@@ -50,7 +50,9 @@ class Tools:
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
         nothing is modified - use cexp_fetch_repo, cexp_pull_repo, or cexp_list_repos instead.
         After cloning, the requested ref is checked out. Returns a JSON object
-        with repo, path, default_branch, ref, and status.
+        with repo, path, default_branch, ref, and status. Only plain
+        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
+        rejected.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).
         :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git.
@@ -71,6 +73,10 @@ class Tools:
                 f"{repo} already exists at {root}; use cexp_fetch_repo, cexp_pull_repo, "
                 "or cexp_list_repos instead (no destructive overwrite)"
             )
+        if ref is not None:
+            # Validated BEFORE cloning so a bad ref never triggers an
+            # (unnecessary) clone; the special value "release" also passes.
+            ref = validate_ref(ref)
         if url is not None:
             url = url.strip()
             if not url or url.startswith("-"):
