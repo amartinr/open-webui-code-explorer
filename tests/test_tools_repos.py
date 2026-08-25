@@ -378,6 +378,22 @@ class TestFetchRepo:
         assert out.startswith("Not found:")
         assert "not cloned yet" in out
 
+    async def test_fetch_not_cloned_suggests_existing_clones(self, repos_path, source_repo):
+        """E6: when no repo is cloned at all, no suggestion; when one exists,
+        the error names it so the agent knows what is available."""
+        tools = make_tools(repos_path)
+        # No clones yet: no "currently cloned" suggestion.
+        out = await tools.cexp_fetch_repo("o/r")
+        assert out.startswith("Not found:")
+        assert "currently cloned" not in out
+
+        # Clone one repo, then ask for a different one.
+        await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
+        out = await tools.cexp_fetch_repo("other/thing")
+        assert out.startswith("Not found:")
+        assert "not cloned yet" in out
+        assert "currently cloned: testowner/testrepo" in out
+
     @pytest.mark.parametrize(
         "bad_origin",
         [

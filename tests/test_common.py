@@ -16,6 +16,7 @@ from common import (
     git_args,
     host_allowed,
     json_output,
+    list_cloned_repos,
     repo_component_ok,
     resolve_path,
     resolve_repo_root,
@@ -235,6 +236,30 @@ class TestNormalizeRemote:
 # ---------------------------------------------------------------------------
 # resolve_repo_root (DESIGN.md §5.6)
 # ---------------------------------------------------------------------------
+
+
+class TestListClonedRepos:
+    def test_empty_or_missing_base(self, tmp_path):
+        assert list_cloned_repos(str(tmp_path / "missing")) == []
+
+    def test_lists_owner_name_sorted(self, tmp_path):
+        base = tmp_path / "repos"
+        for rel in ["b/one", "a/two", "a/one"]:
+            (base / rel / ".git").mkdir(parents=True, exist_ok=True)
+        assert list_cloned_repos(str(base)) == ["a/one", "a/two", "b/one"]
+
+    def test_ignores_non_git_dirs_and_hidden(self, tmp_path):
+        base = tmp_path / "repos"
+        (base / "a" / "real" / ".git").mkdir(parents=True, exist_ok=True)
+        (base / "a" / "naked").mkdir(parents=True, exist_ok=True)  # no .git
+        (base / ".hidden" / "x" / ".git").mkdir(parents=True, exist_ok=True)
+        assert list_cloned_repos(str(base)) == ["a/real"]
+
+    def test_capped(self, tmp_path):
+        base = tmp_path / "repos"
+        for i in range(15):
+            (base / f"o{i}" / "r" / ".git").mkdir(parents=True, exist_ok=True)
+        assert len(list_cloned_repos(str(base), limit=10)) == 10
 
 
 class TestHostAllowed:

@@ -723,7 +723,14 @@ class Tools:
 
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
+            existing = list_cloned_repos(
+                resolve_repos_path(self.valves.repos_path), limit=10
+            )
+            cause = None
+            if existing:
+                cause = f"currently cloned: {', '.join(existing)}"
             raise ToolError(
                 f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
+                cause=cause,
             )

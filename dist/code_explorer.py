@@ -765,6 +765,26 @@ def _normalize_remote(url: str) -> str:
     return f"{host.lower()}/{path}"
 
 
+def list_cloned_repos(repos_path: str, limit: int = 10) -> List[str]:
+    """Names of currently cloned repos under `repos_path` ("owner/name",
+    sorted), capped at `limit`. Used as a hint in "repo not cloned yet"
+    errors so the agent sees what is already available instead of guessing.
+    """
+    base = Path(repos_path)
+    if not base.is_dir():
+        return []
+    out: List[str] = []
+    for owner_dir in sorted(base.iterdir()):
+        if not owner_dir.is_dir() or owner_dir.name.startswith("."):
+            continue
+        for repo_dir in sorted(owner_dir.iterdir()):
+            if repo_dir.is_dir() and (repo_dir / ".git").exists():
+                out.append(f"{owner_dir.name}/{repo_dir.name}")
+                if len(out) >= limit:
+                    return out
+    return out
+
+
 def resolve_repo_root(repo: str, repos_path: str) -> Path:
     """Validate `<owner>/<name>` (exactly two components) and return its root.
 
@@ -1303,9 +1323,16 @@ class Tools:
 
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():
+            existing = list_cloned_repos(
+                resolve_repos_path(self.valves.repos_path), limit=10
+            )
+            cause = None
+            if existing:
+                cause = f"currently cloned: {', '.join(existing)}"
             raise ToolError(
                 f"repository not cloned yet: {repo} (use cexp_clone_repo first)",
                 kind="not_found",
+                cause=cause,
             )
 
     async def cexp_list_files(
