@@ -142,9 +142,9 @@ by phase:
 
 | Script | Tools exposed | Phase(s) |
 |---|---|---|
-| **Repos** | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos` | Phase 1 |
+| **Repos** | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos`, `cexp_remove_repo` | Phase 1 + toolbox batch 1 |
 | **Files & Search** | `cexp_list_files`, `cexp_read_file`, `cexp_search_text`, `cexp_search_symbol` | Phase 2 + `cexp_search_symbol` in Phase 3 |
-| **Commits** | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits` | Phase 3 |
+| **Commits** | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_search_history`, `cexp_show_commit`, `cexp_compare_commits` | Phase 3 + toolbox batch 1 |
 
 Rationale for this split:
 - **Per-script tool access in Open WebUI**: an operator can attach only the
@@ -172,6 +172,7 @@ Admin-facing Valves (not exposed to the agent):
 | `max_results` | int | `50` | Cap on item counts (files, matches, commits). |
 | `max_lines` | int | `200` | Cap on output lines (file reads, diffs). |
 | `max_bytes` | int | `20480` | Hard byte cap (20 KB); whichever of `max_lines`/`max_bytes` is hit first truncates. |
+| `allowed_hosts` | str | `""` | **Repos-only extra**: comma-separated host allow-list for `cexp_clone_repo` (empty = unrestricted); exact host or subdomain on a dot boundary (S3). |
 
 All three scripts need `repos_path` (even read/search/commit tools must locate
 the repositories). The **`OWUI_REPOS_PATH` env var is the recommended global
@@ -290,6 +291,15 @@ All tools share these conventions. Implement them consistently.
     `git diff -U N`).
   - `recursive` → descend into subdirectories in `cexp_list_files`; the
     default (False) lists only the direct entries under the path.
+  - `stat` → in `cexp_show_commit`: return the commit metadata + changed-file
+    summary only, no diff body (cheaper "what did this touch").
+  - `first_parent` → in `cexp_list_commits`: follow only the first parent,
+    tracing the merge narrative and hiding side-branch commits.
+  - `files_only` / `count_only` → in `cexp_search_text`: aggregate output
+    modes (one item per matching file; count_only adds the per-file match
+    count and prevails over files_only; context is ignored in both).
+  - `merged` → in `cexp_list_branches`: `True` = only branches merged into
+    HEAD, `False` = only unmerged, `None` = all (default).
 - **`filter` parameter:** named `filter` for model readability, but its value is a
   **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
   space-separated patterns; a leading `!` marks an exclusion. Applied with
@@ -402,9 +412,26 @@ cexp_pull_repo(
 cexp_list_repos()
 ```
 
-- Enumerate existing clones under `<repos_path>` (owner/repo and, optionally,
-  current checked-out branch). No parameters.
-- Helpful so the model does not clone duplicates.
+- Enumerate existing clones under `<repos_path>` (owner/repo, current
+  checked-out branch, origin URL, and on-disk size in bytes). No parameters.
+- Helpful so the model does not clone duplicates (and sees how much disk each
+  clone uses, feeding the remove_repo decision).
+
+#### `cexp_remove_repo`
+
+```
+cexp_remove_repo(
+  repo:    str      # required: "<owner>/<name>"
+  dry_run: bool     # optional, default False
+)
+```
+
+- Delete a clone under `<repos_path>` (disk hygiene). The target must exist
+  (`Not found:` otherwise) and must resolve strictly inside the resolved
+  `<repos_path>`; symlinked roots are refused (removal never follows links).
+- `dry_run=True` returns the path and its on-disk size in bytes without
+  deleting; `dry_run=False` deletes the tree (inside `asyncio.to_thread`) and
+  returns a confirmation `{"repo", "path", "dry_run", "size", "removed"}`.
 
 #### Phase 1 safety notes
 
@@ -488,14 +515,19 @@ cexp_search_text(
   query:         str      # required
   path:          str      # optional: subdirectory/file to narrow scope
   filter:        str      # optional: file filter, glob pattern (e.g. "*.py")
-  context:       int      # optional: lines of context (rg -C)
+  context:       int      # optional: lines of context (rg -C); ignored in aggregate modes
   case_sensitive:bool     # optional, default false
+  files_only:    bool     # optional: one item per matching file ({"path"})
+  count_only:    bool     # optional: one item per file with the match count ({"path", "count"}); prevails over files_only
 )
 ```
 
 - Pure-Python regex search over the repo's text files (the `regex` package
   when available, else stdlib `re`), honoring `.gitignore`, `path` narrowing,
   and `filter` globs. Returns JSON items `{"path", "line", "text", "context"}`.
+- With `files_only`/`count_only`, the output is aggregated per file (one item
+  per matching file, no lines) and `context` is ignored; `max_results` caps the
+  *file* count in these modes. `count_only` prevails over `files_only`.
 - Capped by the `max_results` Valve.
 
 ---
@@ -529,6 +561,7 @@ cexp_search_symbol(
 cexp_list_branches(
   repo:   str      # required: "<owner>/<name>"
   remote: bool     # optional, default false: also include remote-tracking branches
+  merged: bool | None  # optional: True = merged into HEAD, False = unmerged, None = all
 )
 ```
 
@@ -536,6 +569,10 @@ cexp_list_branches(
   `remote=True`, `git branch --no-color -a`, adding remote-tracking refs as
   `origin/<name>`. Relative to the checked-out clone; never contacts the
   network (`origin/*` reflects the last fetch, not live state).
+- With `merged=True`/`False`, appends `--merged`/`--no-merged` (branches
+  already merged into HEAD vs not, answering "is dev already in main?"). The
+  `-a` flag must precede the merged flags (git parses a trailing `-a` after
+  `--merged` as a malformed object name).
 - Sorted (git's default alphabetic order), capped by the `max_results` Valve.
 - Use before `cexp_clone_repo(ref=...)`, `cexp_list_commits`, or `cexp_compare_commits` to
   discover which branch names exist instead of guessing.
@@ -562,15 +599,43 @@ cexp_list_tags(
 
 ```
 cexp_list_commits(
-  repo:  str      # required: "<owner>/<name>"
-  ref_a: str      # optional (branch|tag|commit)
-  ref_b: str      # optional (branch|tag|commit)
-  path:  str      # optional: narrow scope
+  repo:        str      # required: "<owner>/<name>"
+  ref_a:       str      # optional (branch|tag|commit)
+  ref_b:       str      # optional (branch|tag|commit)
+  path:        str      # optional: narrow scope
+  first_parent: bool    # optional, default false: follow only the first parent
 )
 ```
 
-- `git log --oneline [ref_a..ref_b] -- <path>`, capped by `max_results`. Defaults
-  to current HEAD history when no refs are given.
+- `git log [ref_a..ref_b] -- <path>` with a tab-separated format
+  (`%h %an %cd %s`, commit date `YYYY-MM-DD`), so items are
+  `{"hash", "subject", "author", "date"}`; the parse is tab-separated because
+  author names may contain spaces. Defaults to current HEAD history when no
+  refs are given.
+- `first_parent=True` appends `--first-parent`: traces the merge narrative and
+  hides commits reachable only via merged side branches (the "refac" noise
+  problem); composes with ranges and `path=`.
+- Capped by `max_results`.
+
+#### `cexp_search_history`
+
+```
+cexp_search_history(
+  repo:  str      # required: "<owner>/<name>"
+  query: str      # required: literal string, <= 512 chars
+  path:  str      # optional: narrow scope
+  ref_a: str      # optional (branch|tag|commit)
+  ref_b: str      # optional (branch|tag|commit)
+)
+```
+
+- Git pickaxe search (`git log -S <query>`): finds commits that changed the
+  number of occurrences of the literal string, i.e. when it was introduced or
+  removed. The query is passed as a separate argument (no shell) and validated
+  (non-empty, no NUL, <= 512 chars).
+- Returns the same `{"hash", "subject", "author", "date"}` items as
+  `cexp_list_commits`, capped by `max_results`; no matches is an empty `items`
+  array, not an error. Refs validated by `validate_ref`.
 
 #### `cexp_show_commit`
 
@@ -579,10 +644,14 @@ cexp_show_commit(
   repo:   str      # required: "<owner>/<name>"
   commit: str      # required (commit hash or ref)
   path:   str      # optional: narrow scope
+  stat:   bool     # optional: metadata + file summary, no diff body
 )
 ```
 
 - `git show <commit> -- <path>`, capped by `max_lines`/`max_bytes`.
+- `stat=True`: `git show --stat --format=fuller <commit>` (commit metadata +
+  changed-file summary, no diff body) — the cheap "what did this commit touch";
+  composes with `path=`.
 
 #### `cexp_compare_commits`
 

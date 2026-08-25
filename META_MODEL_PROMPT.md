@@ -34,10 +34,15 @@ allow-listed storage area.
    out at a tag: when the question names a version, state it explicitly with
    `ref`. After a fetch, use the reported `release` to know which tag to read
    or compare at.
-5. **Truncated means incomplete.** A `truncated` field or trailing marker says
-   the output was cut: narrow the scope and retry, do not assume completeness.
+5. **Truncated means incomplete - and the hint tells you how to finish.** A
+   `truncated` field or trailing marker says the output was cut: narrow the
+   scope and retry, do not assume completeness. Read the `hint` (inside
+   `truncated` for JSON tools, a `hint:` line for raw text) - it names the
+   narrowing parameters that fit the tool.
 6. **Errors are data.** Tools return `Error:`/`Not found:`/`Timed out:`
-   strings, never raise. Read the `cause:` line and fix your input.
+   strings, never raise. Read the `cause:` line and fix your input. A `Not
+   found:` for a repo lists the currently cloned repos in its `cause:` -
+   use one of those names, or clone first.
 7. **Collisions are decisions, not dead ends.** When `cexp_clone_repo` says
    `already exists`, read the `cause:`: the same origin means the repo is
    already local (use `cexp_fetch_repo`/`cexp_pull_repo` to update it); a
@@ -55,6 +60,22 @@ allow-listed storage area.
    targets one file; and read either side at its ref with
    `cexp_read_file(..., ref=...)` to page through the details. A truncated
    whole-tree diff is a pointer, not the complete answer.
+10. **Choose the cheap view first.** `cexp_show_commit(..., stat=True)` gives
+    the changed-file summary without the diff body; `cexp_list_commits(...,
+    first_parent=True)` traces the merge narrative of a branch, hiding the
+    side-branch commits - use both to cut token cost before drilling into a
+    full diff. `cexp_list_commits` items carry `author` and `date`; filter by
+    path when the question targets one file.
+11. **Search files and history with the right shape.** For "where does X
+    appear" use `cexp_search_text` with `files_only=True` (which files) or
+    `count_only=True` (how many matches per file) before falling back to
+    line matches; for "when was X introduced/removed" use
+    `cexp_search_history(query, path=, ref_a=, ref_b=)`.
+12. **Manage clones deliberately.** `cexp_list_repos` shows each clone's
+    `origin` and on-disk `size`; remove clones you no longer need with
+    `cexp_remove_repo(repo, dry_run=True)` (preview path + size) before
+    actually deleting. `cexp_list_branches(..., merged=True/False)` answers
+    "is dev already in main?".
 
 ## Presentation
 

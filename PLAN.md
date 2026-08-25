@@ -29,7 +29,7 @@
 | 11 | E8: `cexp_list_branches` + `merged` (template + tests) | ✅ |
 | 12 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 14 -> 15) | ✅ |
 | 13 | E10: `size` field in `cexp_list_repos` (template + tests) | ✅ |
-| 14 | Docs (`DESIGN.md` §6/§7, `README.md`, `META_MODEL_PROMPT.md`) + version bump `1.2.0` (4 places) | ☐ |
+| 14 | Docs (`DESIGN.md` §6/§7, `README.md`, `META_MODEL_PROMPT.md`) + version bump `1.2.0` (4 places) | ✅ |
 | 15 | Regenerate `dist/`, full suite, final checks (grep for `import common` / markers, combined tool count) | ☐ |
 
 Each step ends with: `python build.py` (dist/ is generated and committed), `python -m pytest` (all green), commit, push, then control returns to the user.
@@ -183,8 +183,8 @@ Note: `tests/test_valves.py` currently enforces the **identical** Valves field s
 
 ## Delivery checklist
 
-1. All phases implemented in source (`templates/`, `common.py`), `dist/` regenerated via `build.py`.
-2. `python -m pytest` all green (existing + new).
-3. Docs updated: `DESIGN.md` §6/§7 (new params and tools), `README.md`, and **`META_MODEL_PROMPT.md`** (the strategy section must teach the agent the new flags: `stat`, `first_parent`, `files_only`/`count_only`, `merged`, `remove_repo`, `search_history`, truncation hints).
-4. Version bump to `1.2.0` in all **four** version locations (three templates + `ALL_FRONTMATTER` in `build.py`).
-5. One commit per phase (or per enhancement), each ending green; push.
+1. ✅ All phases implemented in source (`templates/`, `common.py`), `dist/` regenerated via `build.py`.
+2. ✅ `python -m pytest` all green (379 tests).
+3. ✅ Docs updated: `DESIGN.md` §5.4/§5.5/§6/§7 (new params, tools, `allowed_hosts` Valve), `README.md`, and **`META_MODEL_PROMPT.md`** (rules 5/6/10/11/12 teach `stat`, `first_parent`, `files_only`/`count_only`, `merged`, `remove_repo`, `search_history`, truncation hints).
+4. ✅ Version bump to `1.2.0` in all **four** version locations (three templates + `ALL_FRONTMATTER` in `build.py`).
+5. ✅ One commit per enhancement, each ending green; all pushed.

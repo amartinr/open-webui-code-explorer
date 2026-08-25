@@ -11,10 +11,10 @@ Four self-contained scripts (one per Open WebUI Tool), generated from
 
 | Script | Tools |
 |---|---|
-| `dist/repos.py` | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos` |
+| `dist/repos.py` | `cexp_clone_repo`, `cexp_fetch_repo`, `cexp_pull_repo`, `cexp_list_repos`, `cexp_remove_repo` |
 | `dist/files_search.py` | `cexp_list_files`, `cexp_read_file`, `cexp_search_text`, `cexp_search_symbol` |
-| `dist/commits.py` | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_show_commit`, `cexp_compare_commits` |
-| `dist/code_explorer.py` | all 13 tools in one script |
+| `dist/commits.py` | `cexp_list_branches`, `cexp_list_tags`, `cexp_list_commits`, `cexp_search_history`, `cexp_show_commit`, `cexp_compare_commits` |
+| `dist/code_explorer.py` | all 15 tools in one script |
 
 - `cexp_read_file` / `cexp_list_files` take a `ref` (branch, tag, or commit):
   read a file, or list the files, as they exist at that version (from the
@@ -24,6 +24,20 @@ Four self-contained scripts (one per Open WebUI Tool), generated from
   `max_depth`, which requires `recursive=True`).
 - `cexp_compare_commits` takes `context` (unified-context lines) and `path`:
   narrow a large diff to a single file.
+- `cexp_show_commit` takes `stat=True` for a metadata + changed-file summary
+  (no diff body); `cexp_list_commits` takes `first_parent=True` to trace the
+  merge narrative, and its items carry `author` and `date`.
+- `cexp_search_text` takes `files_only`/`count_only` for per-file aggregate
+  results (no line matches).
+- `cexp_search_history(query, ...)` answers "when was this string introduced
+  or removed?" (git pickaxe).
+- `cexp_list_branches` takes `merged=True/False` to filter by merge state.
+- `cexp_remove_repo(repo, dry_run=True)` previews a deletion (path + size);
+  without dry_run it deletes the clone. `cexp_list_repos` reports each
+  clone's `origin` and on-disk `size`.
+- Truncated results carry a `hint` (in `truncated` for JSON tools, a `hint:`
+  line for raw-text tools) telling the agent how to narrow; "repo not found"
+  errors list the existing clones.
 
 Use the three per-group scripts for per-group tool access (e.g. attach only
 read/search tools to a model). `dist/code_explorer.py` is a single-paste
@@ -78,9 +92,13 @@ permission comes from the mounted volume.
 ## Security
 
 - Subprocesses: `git` only, argument arrays, headless env (no prompts, no
-  pager, no user/global config).
+  pager, no user/global config; hostile `GIT_*` vars like `GIT_DIR`/`GIT_SSH`
+  are purged, and `fetch`/`pull` re-validate the remote origin through the
+  protocol allow-list before running).
 - Read-only for code: only `cexp_clone_repo` / `cexp_fetch_repo` /
-  `cexp_pull_repo` write, only inside `<repos_path>`, only via `git`.
+  `cexp_pull_repo` write, only inside `<repos_path>`, only via `git`;
+  `cexp_remove_repo` deletes a clone but only strictly inside `<repos_path>`
+  (symlinked roots refused; `dry_run` previews).
 - Path sanitization: `repo` is `<owner>/<name>` (components
   `^[A-Za-z0-9_][A-Za-z0-9_.-]*$`); file paths checked for
   absolute/`..`/symlink escapes.
@@ -91,7 +109,9 @@ permission comes from the mounted volume.
   (local exfiltration) and `ext::`/`sh::` (git's command-execution URL form)
   are blocked, as are credentials in URLs (they would be persisted in
   `<repo>/.git/config`). SSH clones work only with preconfigured credentials
-  (`BatchMode=yes` fails cleanly otherwise).
+  (`BatchMode=yes` fails cleanly otherwise). Optional `allowed_hosts` Valve
+  on the Repos script restricts which hosts may be cloned (exact or
+  subdomain on a dot boundary; empty = unrestricted).
 - One clone per `<owner>/<name>`: cloning an existing repo returns an
   `Error:` naming the existing origin — `cexp_fetch_repo`/`cexp_pull_repo`
   when it is the same logical repo, `cexp_list_repos` otherwise (a different
