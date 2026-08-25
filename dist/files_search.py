@@ -2,7 +2,7 @@
 title: Code Explorer - Files & Search
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.2
+version: 1.2.3
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
 required_open_webui_version: 0.9.6
@@ -877,6 +877,14 @@ def resolve_path(repo: str, path: Optional[str], repos_path: str) -> Path:
         return root
     if path.startswith("/") or path.startswith("\\") or _WIN_ABS_RE.match(path):
         raise ToolError(f"absolute paths are not allowed: {path!r}")
+    # Trailing-slash tolerance (fix): strip a trailing "/" (like
+    # _normalize_remote does for clone URLs) so "backend/" resolves exactly
+    # like "backend". Done AFTER the absolute check so "/" and "//" are
+    # still rejected below, and BEFORE the segment check so the empty-segment
+    # rule (which blocks "..", "a//b", "./") stays intact.
+    path = path.rstrip("/")
+    if not path:
+        raise ToolError(f"invalid path segment in {path!r}")
     parts = path.split("/")
     if any(p in ("", ".", "..") for p in parts):
         raise ToolError(f"invalid path segment in {path!r}")

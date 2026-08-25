@@ -341,6 +341,22 @@ class TestResolvePath:
     def test_relative_ok(self, tmp_path):
         assert resolve_path("o/r", "src/x.py", str(tmp_path)) == tmp_path / "o" / "r" / "src" / "x.py"
 
+    def test_trailing_slash_treated_like_no_slash(self, tmp_path):
+        """A trailing slash resolves exactly like the bare path."""
+        assert resolve_path("o/r", "src/", str(tmp_path)) == tmp_path / "o" / "r" / "src"
+        assert resolve_path("o/r", "src/", str(tmp_path)) == resolve_path("o/r", "src", str(tmp_path))
+        assert resolve_path("o/r", "a/b/", str(tmp_path)) == tmp_path / "o" / "r" / "a" / "b"
+
+    def test_trailing_slashes_stripped(self, tmp_path):
+        """Multiple trailing slashes are all stripped."""
+        assert resolve_path("o/r", "src//", str(tmp_path)) == tmp_path / "o" / "r" / "src"
+
+    def test_lone_slash_still_rejected(self, tmp_path):
+        """A path that is only slashes must stay rejected (absolute-ish)."""
+        for bad in ["/", "//"]:
+            with pytest.raises(ToolError):
+                resolve_path("o/r", bad, str(tmp_path))
+
     @pytest.mark.parametrize("bad", ["/etc/passwd", "\\etc", "C:\\x", "C:/x"])
     def test_absolute_rejected(self, bad, tmp_path):
         with pytest.raises(ToolError):
