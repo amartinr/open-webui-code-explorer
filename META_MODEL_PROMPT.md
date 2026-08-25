@@ -26,6 +26,16 @@ allow-listed storage area.
    the output was cut: narrow the scope and retry, do not assume completeness.
 6. **Errors are data.** Tools return `Error:`/`Not found:`/`Timed out:`
    strings, never raise. Read the `cause:` line and fix your input.
+7. **Collisions are decisions, not dead ends.** When `cexp_clone_repo` says
+   `already exists`, read the `cause:`: the same origin means the repo is
+   already local (use `cexp_fetch_repo`/`cexp_pull_repo` to update it); a
+   different origin is a namespace collision — one clone per `<owner>/<name>`
+   is supported, so review `cexp_list_repos` (which shows each clone's
+   `origin`) and choose. Never attempt to overwrite.
+8. **Clone URLs are restricted.** `cexp_clone_repo` accepts only
+   `https`/`http`/`git`/`ssh` (scp-like `git@host:path` works); `file://` is
+   blocked, and URLs must not contain credentials. For private repos, ssh
+   works only with preconfigured credentials.
 
 ## Presentation
 

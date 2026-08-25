@@ -22,7 +22,9 @@ from common import (
     run_allowed,
     trim_cause,
     truncate_output,
+    validate_clone_url,
     validate_ref,
+    _normalize_remote,
 )
 
 
@@ -138,6 +140,95 @@ class TestValidateRef:
     def test_valid_does_not_mutate(self):
         ref = "release/v2.3.4"
         assert validate_ref(ref) is ref
+
+
+# ---------------------------------------------------------------------------
+# validate_clone_url / _normalize_remote (Enhancement B, ENHANCEMENT_B.md §2)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCloneUrl:
+    @pytest.mark.parametrize(
+        "good,expected",
+        [
+            ("https://github.com/o/r.git", "https://github.com/o/r.git"),
+            ("http://git.local/o/r", "http://git.local/o/r"),
+            ("git://127.0.0.1:9418/src", "git://127.0.0.1:9418/src"),
+            ("ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"),
+            # scp-like is normalized to ssh:// (git's own semantics).
+            ("git@github.com:o/r.git", "ssh://git@github.com/o/r.git"),
+            ("git@host:1234/repo.git", "ssh://git@host/1234/repo.git"),
+            # Scheme matching is case-insensitive.
+            ("HTTPS://GITHUB.COM/o/r.git", "HTTPS://GITHUB.COM/o/r.git"),
+            # ssh with an explicit port is fine.
+            ("ssh://git@host:2222/o/r.git", "ssh://git@host:2222/o/r.git"),
+        ],
+    )
+    def test_valid(self, good, expected):
+        assert validate_clone_url(good) == expected
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            "   ",  # whitespace only
+            "-o",  # leading dash -> option injection
+            "--upload-pack=x",  # option injection
+            "ext::sh -c 'id'",  # git command-execution URL (RCE vector)
+            "sh::anything",  # command execution
+            "file:///etc/passwd",  # local exfiltration
+            "file:///tmp/repo",  # local exfiltration
+            "ftp://host/o/r.git",  # stray protocol
+            "rsync://host/o/r",  # stray protocol
+            "https://TOKEN@github.com/o/r.git",  # credentials would persist
+            "https://user:pass@github.com/o/r.git",  # credentials would persist
+            "ssh://git:pass@github.com/o/r.git",  # ssh password
+            "https://github.com/o/r.git?x=1",  # query string
+            "https://github.com/o/r.git#frag",  # fragment
+            "git@host",  # scp-like without a path
+            "host:repo.git",  # scp-like without a user
+            "hello world",  # whitespace, no scheme
+        ],
+    )
+    def test_invalid(self, bad):
+        with pytest.raises(ToolError) as excinfo:
+            validate_clone_url(bad)
+        assert "invalid clone url" in str(excinfo.value)
+
+    def test_error_names_the_url(self):
+        with pytest.raises(ToolError) as excinfo:
+            validate_clone_url("ftp://host/x")
+        assert "ftp://host/x" in str(excinfo.value)
+
+
+class TestNormalizeRemote:
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            # Same logical repo: trailing .git and case are stripped.
+            ("https://github.com/o/r", "https://github.com/o/r.git"),
+            ("HTTPS://GitHub.com/o/r.git", "https://github.com/o/r"),
+            # Same repo across transports (scheme/ssh user ignored).
+            ("https://github.com/o/r", "ssh://git@github.com/o/r"),
+            ("git://127.0.0.1:9418/src", "ssh://git@127.0.0.1:9418/src"),
+        ],
+    )
+    def test_equal(self, a, b):
+        assert _normalize_remote(a) == _normalize_remote(b)
+
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("https://github.com/o/r", "https://gitlab.com/o/r"),
+            ("https://github.com/o/r", "https://github.com/o/other"),
+            ("https://github.com/o/r", "git://127.0.0.1:9418/src"),
+        ],
+    )
+    def test_different(self, a, b):
+        assert _normalize_remote(a) != _normalize_remote(b)
+
+    def test_no_scheme_passthrough(self):
+        assert _normalize_remote("o/r") == "o/r"
 
 
 # ---------------------------------------------------------------------------

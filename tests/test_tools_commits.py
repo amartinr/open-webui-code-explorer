@@ -1,19 +1,23 @@
 """Integration tests for the Phase 3 Commits script
 (cexp_list_branches, cexp_list_tags, cexp_list_commits, cexp_show_commit, cexp_compare_commits).
 
-All tests operate on a local file:// repository with real git history
-(branches, tags, multiple commits, a diverging branch), so no network is
-needed.
+All tests operate on a local `git://` repository with real git history
+(branches, tags, multiple commits, a diverging branch), served by the
+`git daemon` fixture (conftest.py): `file://` is blocked by the clone-URL
+allow-list (ENHANCEMENT_B.md), so the daemon provides a real
+network-agnostic origin.
 """
 
 import inspect
 import json
 import types
+import uuid
 from pathlib import Path
 
 import pytest
 
 from common import git_args, run_allowed
+from conftest import DaemonSource, daemon_source
 from dist.commits import Tools
 from dist.repos import Tools as ReposTools
 
@@ -54,8 +58,8 @@ async def init_history_repo(path: Path) -> Path:
 
 
 @pytest.fixture
-async def history_repo(tmp_path):
-    return await init_history_repo(tmp_path / "src")
+async def history_repo(git_daemon):
+    return await init_history_repo(daemon_source(git_daemon, f"src-{uuid.uuid4().hex[:8]}"))
 
 
 @pytest.fixture
@@ -73,10 +77,10 @@ def parse_json(out: str) -> dict:
     return json.loads(out)
 
 
-async def clone_source(repos_path: Path, source: Path, name: str = "testowner/testrepo") -> Tools:
+async def clone_source(repos_path: Path, source: DaemonSource, name: str = "testowner/testrepo") -> Tools:
     repos_tools = ReposTools()
     repos_tools.valves.repos_path = str(repos_path)
-    out = await repos_tools.cexp_clone_repo(name, url=f"file://{source}")
+    out = await repos_tools.cexp_clone_repo(name, url=source.url)
     assert not out.startswith("Error:"), out
     return make_tools(repos_path)
 
@@ -111,7 +115,7 @@ class TestListBranches:
     async def test_detached_head_marks_current(self, repos_path, history_repo):
         repos_tools = ReposTools()
         repos_tools.valves.repos_path = str(repos_path)
-        await repos_tools.cexp_clone_repo("testowner/testrepo", url=f"file://{history_repo}", ref="v1.0.0")
+        await repos_tools.cexp_clone_repo("testowner/testrepo", url=history_repo.url, ref="v1.0.0")
         tools = make_tools(repos_path)
         out = await tools.cexp_list_branches("testowner/testrepo")
         result = parse_json(out)
@@ -136,8 +140,8 @@ class TestListTags:
         result = parse_json(out)
         assert result["items"] == ["v1.1.0", "v1.0.0"]
 
-    async def test_no_tags(self, repos_path, tmp_path):
-        src = tmp_path / "src"
+    async def test_no_tags(self, repos_path, git_daemon):
+        src = daemon_source(git_daemon, f"src-notags-{uuid.uuid4().hex[:8]}")
         src.mkdir()
         res = await run_git(src, "init", "-b", "main")
         assert res.returncode == 0

@@ -1,18 +1,22 @@
 """Integration tests for the Phase 1 Repos script (clone/fetch/pull/list).
 
-All tests operate on local file:// repositories created on the fly, so no
-network access is needed and the full surface is exercised end to end.
+All tests operate on local `git://` repositories served by the `git daemon`
+fixture (conftest.py): `file://` is blocked by the clone-URL allow-list
+(ENHANCEMENT_B.md), so the daemon provides a real network-agnostic origin.
+No network access is needed and the full surface is exercised end to end.
 """
 
 import asyncio
 import inspect
 import json
 import types
+import uuid
 from pathlib import Path
 
 import pytest
 
 from common import CommandResult, _release_sort_key, git_args, run_allowed
+from conftest import DaemonSource, daemon_source
 from dist.repos import Tools
 
 IDENT = ["-c", "user.name=Test", "-c", "user.email=test@example.com"]
@@ -51,13 +55,16 @@ async def init_source_repo(path: Path, *, with_release_tags: bool = True) -> Pat
 
 
 @pytest.fixture
-async def source_repo(tmp_path):
-    return await init_source_repo(tmp_path / "src")
+async def source_repo(git_daemon):
+    return await init_source_repo(daemon_source(git_daemon, f"src-{uuid.uuid4().hex[:8]}"))
 
 
 @pytest.fixture
-async def source_repo_no_tags(tmp_path):
-    return await init_source_repo(tmp_path / "src", with_release_tags=False)
+async def source_repo_no_tags(git_daemon):
+    return await init_source_repo(
+        daemon_source(git_daemon, f"src-notags-{uuid.uuid4().hex[:8]}"),
+        with_release_tags=False,
+    )
 
 
 @pytest.fixture
@@ -71,8 +78,9 @@ def make_tools(repos_path: Path) -> Tools:
     return tools
 
 
-def src_url(source: Path) -> str:
-    return f"file://{source}"
+def src_url(source: DaemonSource) -> str:
+    """The git:// URL of a DaemonSource (precomputed by the fixture)."""
+    return source.url
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +154,8 @@ class TestCloneRepo:
         assert out.startswith("Error:")
         assert "no tags" in out
 
-    async def test_release_fallback_newest_tag_by_date(self, repos_path, tmp_path, monkeypatch):
-        src = await init_source_repo(tmp_path / "src", with_release_tags=False)
+    async def test_release_fallback_newest_tag_by_date(self, repos_path, monkeypatch, git_daemon):
+        src = await init_source_repo(daemon_source(git_daemon, "src-fallback"), with_release_tags=False)
         # Annotated tags with explicit tagger dates: newest by creatordate wins.
         monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
         monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
@@ -159,8 +167,8 @@ class TestCloneRepo:
         out = await tools.cexp_clone_repo("o/r", url=src_url(src), ref="release")
         assert parse_json(out)["ref"] == "beta (release tag)"
 
-    async def test_clone_release_prefers_semver_over_newer_non_semver(self, repos_path, tmp_path):
-        src = await init_source_repo(tmp_path / "src")  # v1.0.0, v1.1.0
+    async def test_clone_release_prefers_semver_over_newer_non_semver(self, repos_path, git_daemon):
+        src = await init_source_repo(daemon_source(git_daemon, "src-semver"))  # v1.0.0, v1.1.0
         await run_git(src, "tag", "zzz")  # newest by date, but not semver
         tools = make_tools(repos_path)
         out = await tools.cexp_clone_repo("o/r", url=src_url(src), ref="release")
@@ -202,12 +210,78 @@ class TestCloneRepo:
         assert out.startswith("Error:")
         assert "invalid clone url" in out
 
-    async def test_failed_clone_cleans_partial_dir(self, repos_path, tmp_path):
+    async def test_failed_clone_cleans_partial_dir(self, repos_path, git_daemon):
         # A clone from a nonexistent remote must fail and leave no junk behind.
         tools = make_tools(repos_path)
-        out = await tools.cexp_clone_repo("o/r", url=src_url(tmp_path / "does-not-exist"))
+        out = await tools.cexp_clone_repo("o/r", url=daemon_source(git_daemon, "does-not-exist").url)
         assert out.startswith("Error:")
         assert not (repos_path / "o" / "r").exists()
+
+
+# ---------------------------------------------------------------------------
+# Clone URL validation & collision policy (Enhancement B, ENHANCEMENT_B.md)
+# ---------------------------------------------------------------------------
+
+
+class TestCloneUrlAndCollision:
+    async def test_collision_same_origin(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        url = src_url(source_repo)
+        await tools.cexp_clone_repo("o/r", url=url)
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert out.startswith("Error:")
+        assert "already exists" in out
+        assert "same origin" in out
+        assert "cexp_fetch_repo" in out
+        assert "cexp_pull_repo" in out
+
+    async def test_collision_different_origin(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_clone_repo("o/r", url="https://gitlab.com/other/org.git")
+        assert out.startswith("Error:")
+        assert "already exists" in out
+        assert "namespace collision" in out
+        assert "gitlab.com/other/org" in out
+        assert "cexp_list_repos" in out
+        # The existing clone is untouched.
+        root = repos_path / "o" / "r"
+        assert (root / "hello.txt").read_text() == "hello world\n"
+
+    async def test_same_origin_across_transports(self, repos_path, source_repo, git_daemon):
+        # https/ssh/git of the same host+path are the SAME logical repo.
+        _, port, _ = git_daemon
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_clone_repo(
+            "o/r", url=f"ssh://git@127.0.0.1:{port}/{source_repo.name}"
+        )
+        assert out.startswith("Error:")
+        assert "same origin" in out
+
+    async def test_list_repos_reports_origin(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        url = src_url(source_repo)
+        await tools.cexp_clone_repo("o/r", url=url)
+        out = await tools.cexp_list_repos()
+        result = parse_json(out)
+        assert result["items"][0]["origin"] == url
+
+    async def test_blocked_protocols_never_clone(self, repos_path):
+        tools = make_tools(repos_path)
+        for bad in [
+            "file:///etc/passwd",
+            "ext::sh -c 'id'",
+            "ftp://host/o/r.git",
+            "rsync://host/o/r",
+            "ssh://git:pass@host/o/r.git",
+            "https://user@host/o/r.git",
+            "https://host/o/r.git?x=1",
+        ]:
+            out = await tools.cexp_clone_repo("o/r", url=bad)
+            assert out.startswith("Error:"), bad
+            assert "invalid clone url" in out, bad
+            assert not (repos_path / "o" / "r").exists(), bad
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +407,8 @@ class TestPullRepo:
 
 
 class TestListRepos:
-    async def test_lists_clones_with_branch(self, repos_path, source_repo, tmp_path):
-        src2 = await init_source_repo(tmp_path / "src2")
+    async def test_lists_clones_with_branch(self, repos_path, source_repo, git_daemon):
+        src2 = await init_source_repo(daemon_source(git_daemon, "src-list-2"))
         tools = make_tools(repos_path)
         await tools.cexp_clone_repo("owner1/repo1", url=src_url(source_repo))
         await tools.cexp_clone_repo("owner2/repo2", url=src_url(src2))
@@ -372,10 +446,10 @@ class TestListRepos:
         assert "o/r" in repos
         assert not any("not-a-repo" in r for r in repos)
 
-    async def test_max_results_cap(self, repos_path, source_repo, tmp_path):
+    async def test_max_results_cap(self, repos_path, source_repo, git_daemon):
         tools = make_tools(repos_path)
         for i in range(5):
-            src = await init_source_repo(tmp_path / f"src{i}")
+            src = await init_source_repo(daemon_source(git_daemon, f"src-cap-{i}"))
             await tools.cexp_clone_repo(f"owner/repo{i}", url=src_url(src))
         tools.valves.max_results = 2
         out = await tools.cexp_list_repos()

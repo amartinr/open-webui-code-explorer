@@ -83,12 +83,25 @@ permission comes from the mounted volume.
   absolute/`..`/symlink escapes.
 - Ref sanitization: refs validated before reaching git (no option injection,
   no `..` ranges, no revision expressions).
+- **Clone-URL protocol allow-list**: only `https`, `http`, `git`, `ssh`;
+  scp-like `git@host:path` is accepted (normalized to `ssh://`); `file://`
+  (local exfiltration) and `ext::`/`sh::` (git's command-execution URL form)
+  are blocked, as are credentials in URLs (they would be persisted in
+  `<repo>/.git/config`). SSH clones work only with preconfigured credentials
+  (`BatchMode=yes` fails cleanly otherwise).
+- One clone per `<owner>/<name>`: cloning an existing repo returns an
+  `Error:` naming the existing origin — `cexp_fetch_repo`/`cexp_pull_repo`
+  when it is the same logical repo, `cexp_list_repos` otherwise (a different
+  host is a namespace collision; a different transport of the same host is
+  the same repo). Never overwrites.
 - Bounded output: every result capped by the `max_results` / `max_lines` /
   `max_bytes` Valves, with explicit truncation markers.
 - No shell, no code execution, no network from the model.
 
 ## Tool conventions
 
+- `cexp_list_repos` reports each clone's `repo`, current `branch`, and
+  `origin` (the clone URL, showing provider + protocol).
 - Structured results are JSON (indented, UTF-8, always valid): the
   clone/fetch/pull/list/search/commit-enumeration tools, with a structured
   `truncated` field when capped. `cexp_read_file` and the diff tools return

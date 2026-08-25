@@ -243,8 +243,10 @@ def validate_clone_url(url: str) -> str
 
 def _normalize_remote(url: str) -> str
 # Canonical form for COMPARING remotes (collision detection only): lowercase
-# scheme+host, strip trailing ".git" and "/", keep path case. So
-# https://github.com/o/r and https://github.com/o/r.git compare equal.
+# host (without userinfo), strip trailing ".git" and "/", keep path case.
+# Scheme and ssh user are NOT part of the comparison, so https://github.com/o/r,
+# ssh://git@github.com/o/r and https://github.com/o/r.git compare equal (same
+# logical repo, different transport).
 
 async def _remote_origin(root: str) -> str
 # The repo's remote origin URL (git -C <root> remote get-url origin), or ""

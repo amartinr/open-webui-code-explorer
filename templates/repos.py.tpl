@@ -48,14 +48,19 @@ class Tools:
 
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
-        nothing is modified - use cexp_fetch_repo, cexp_pull_repo, or cexp_list_repos instead.
-        After cloning, the requested ref is checked out. Returns a JSON object
-        with repo, path, default_branch, ref, and status. Only plain
-        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
-        rejected.
+        nothing is modified - the existing clone's origin is reported: use
+        cexp_fetch_repo/cexp_pull_repo when it is the same logical repo, or
+        cexp_list_repos to review existing clones (one clone per
+        <owner>/<name> is supported). Protocols https, http, git, and ssh are
+        allowed (scp-like git@host:path works); file:// and other protocols
+        are rejected, and URLs must not contain credentials (ssh requires
+        preconfigured credentials). After cloning, the requested ref is
+        checked out. Returns a JSON object with repo, path, default_branch,
+        ref, and status. Only plain branch/tag/commit refs are accepted;
+        revision expressions (HEAD~1) are rejected.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).
-        :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git.
+        :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git; protocols https, http, git, ssh are allowed (scp-like git@host:path works); credentials in the URL are rejected; ssh requires preconfigured credentials.
         :param ref: Optional branch, tag, or the special value "release", which resolves to the most recent release tag.
         """
         try:
@@ -68,22 +73,34 @@ class Tools:
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
-        if root.exists():
-            raise ToolError(
-                f"{repo} already exists at {root}; use cexp_fetch_repo, cexp_pull_repo, "
-                "or cexp_list_repos instead (no destructive overwrite)"
-            )
         if ref is not None:
             # Validated BEFORE cloning so a bad ref never triggers an
             # (unnecessary) clone; the special value "release" also passes.
             ref = validate_ref(ref)
         if url is not None:
-            url = url.strip()
-            if not url or url.startswith("-"):
-                raise ToolError(f"invalid clone url: {url!r}")
+            # Protocol allow-list + scp-like normalization BEFORE the clone so
+            # a malicious URL never reaches git (ENHANCEMENT_B.md §2.1).
+            url = validate_clone_url(url)
             remote = url
         else:
             remote = f"https://github.com/{repo}.git"
+
+        if root.exists():
+            existing = await _remote_origin(str(root))
+            if existing and _normalize_remote(existing) == _normalize_remote(remote):
+                raise ToolError(
+                    f"repo already exists: {repo} at {root} (cloned from {existing}, same origin)",
+                    cause="use cexp_fetch_repo or cexp_pull_repo to update it (no destructive overwrite)",
+                )
+            raise ToolError(
+                f"repo already exists: {repo} at {root} (cloned from {existing or 'unknown origin'})",
+                cause=(
+                    f"namespace collision: the existing clone comes from a different origin than the "
+                    f"requested {remote}. One clone per <owner>/<name> is supported; use "
+                    "cexp_fetch_repo/cexp_pull_repo if it is the same logical repo, or "
+                    "cexp_list_repos to review existing clones"
+                ),
+            )
 
         root.parent.mkdir(parents=True, exist_ok=True)
         res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
@@ -295,11 +312,13 @@ class Tools:
     async def cexp_list_repos(self) -> str:
         """List all cloned repositories under the storage area.
 
-        Use to see what is already cloned (owner/name and current branch)
-        before deciding whether to clone, fetch, or pull. Returns a JSON
-        object with an items array of {"repo", "branch"} entries. No parameters.
+        Use to see what is already cloned (owner/name, current branch, and
+        the origin URL each clone was made from, which shows the provider and
+        protocol) before deciding whether to clone, fetch, or pull. Returns a
+        JSON object with an items array of {"repo", "branch", "origin"}
+        entries. No parameters.
 
-        :return: a JSON object with an `items` array of {"repo", "branch"} entries, sorted.
+        :return: a JSON object with an `items` array of {"repo", "branch", "origin"} entries, sorted.
         """
         try:
             return await self._list_repos()
@@ -323,6 +342,7 @@ class Tools:
                     {
                         "repo": f"{owner_dir.name}/{repo_dir.name}",
                         "branch": await self._current_branch(str(repo_dir)),
+                        "origin": await _remote_origin(str(repo_dir)),
                     }
                 )
         if not entries:

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from common import git_args, run_allowed
+from conftest import daemon_source
 from dist.files_search import Tools as FilesSearchTools
 from dist.repos import Tools as ReposTools
 
@@ -84,17 +85,17 @@ async def _init_source_repo(path: Path) -> Path:
     return path
 
 
-async def test_admin_valves_take_effect_at_runtime(tmp_path):
+async def test_admin_valves_take_effect_at_runtime(tmp_path, git_daemon):
     """Simulate Open WebUI's injection exactly: load_tool_module_by_id returns
     a Tools instance, then `module.valves = module.Valves(**admin_vals)`
     replaces the defaults (backend/open_webui/utils/tools.py, plugin.py).
     The tools must honor the ADMIN values, not the __init__ defaults."""
-    src = await _init_source_repo(tmp_path / "src")
+    src = await _init_source_repo(daemon_source(git_daemon, "valves-src"))
 
     # Clone with the Repos script.
     repos_tools = ReposTools()
     repos_tools.valves = repos_tools.Valves(repos_path=str(tmp_path / "repos"))
-    out = await repos_tools.cexp_clone_repo("o/r", url=f"file://{src}")
+    out = await repos_tools.cexp_clone_repo("o/r", url=src.url)
     assert not out.startswith("Error:"), out
 
     # Open WebUI injects the admin-saved valves onto a fresh instance.
@@ -112,7 +113,7 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path):
 
     # The same injection flow for the Repos script: clone a second repo so
     # max_results=1 actually truncates.
-    out = await repos_tools.cexp_clone_repo("o/r2", url=f"file://{src}")
+    out = await repos_tools.cexp_clone_repo("o/r2", url=src.url)
     assert not out.startswith("Error:"), out
     repos_tools2 = ReposTools()
     repos_tools2.valves = repos_tools2.Valves(

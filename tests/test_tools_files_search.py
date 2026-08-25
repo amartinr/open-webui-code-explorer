@@ -1,18 +1,21 @@
 """Integration tests for the Phase 2 Files & Search script
 (cexp_list_files, cexp_read_file, cexp_search_text).
 
-All tests operate on a local file:// repository created on the fly, so no
-network access is needed.
+All tests operate on a local `git://` repository served by the `git daemon`
+fixture (conftest.py): `file://` is blocked by the clone-URL allow-list
+(ENHANCEMENT_B.md), so the daemon provides a real network-agnostic origin.
 """
 
 import inspect
 import json
 import types
+import uuid
 from pathlib import Path
 
 import pytest
 
 from common import git_args, run_allowed
+from conftest import DaemonSource, daemon_source
 from dist.files_search import Tools
 from dist.repos import Tools as ReposTools
 
@@ -48,8 +51,8 @@ async def init_repo(path: Path) -> Path:
 
 
 @pytest.fixture
-async def source_repo(tmp_path):
-    return await init_repo(tmp_path / "src")
+async def source_repo(git_daemon):
+    return await init_repo(daemon_source(git_daemon, f"src-{uuid.uuid4().hex[:8]}"))
 
 
 @pytest.fixture
@@ -67,11 +70,11 @@ def parse_json(out: str) -> dict:
     return json.loads(out)
 
 
-async def clone_source(repos_path: Path, source: Path, name: str = "testowner/testrepo") -> Tools:
+async def clone_source(repos_path: Path, source: DaemonSource, name: str = "testowner/testrepo") -> Tools:
     """Clone with the Repos script tools, then hand the Files & Search tools."""
     repos_tools = ReposTools()
     repos_tools.valves.repos_path = str(repos_path)
-    out = await repos_tools.cexp_clone_repo(name, url=f"file://{source}")
+    out = await repos_tools.cexp_clone_repo(name, url=source.url)
     assert not out.startswith("Error:"), out
     return make_tools(repos_path)
 
@@ -871,7 +874,7 @@ class TestOpenWebUILoading:
         assert 'Example: cexp_read_file("owner/repo",' in getattr(tools, "cexp_read_file").__doc__
         assert '"src/main.py").' in getattr(tools, "cexp_read_file").__doc__
 
-    async def test_works_without_fd_rg_binaries(self, tmp_path, monkeypatch):
+    async def test_works_without_fd_rg_binaries(self, git_daemon, tmp_path, monkeypatch):
         """The whole point of the pure-Python implementation: the deployment
         environment has no fd/rg binaries. Simulate it by making shutil.which
         return None for them (git still needed for cloning)."""
@@ -887,7 +890,7 @@ class TestOpenWebUILoading:
 
         monkeypatch.setattr(common_mod.shutil, "which", fake_which)
 
-        src = tmp_path / "src"
+        src = daemon_source(git_daemon, f"src-fd-{uuid.uuid4().hex[:8]}")
         await init_repo(src)
         tools = await clone_source(tmp_path / "repos", src)
 

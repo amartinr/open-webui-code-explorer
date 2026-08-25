@@ -15,13 +15,13 @@
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | `_validate_clone_url` in `common.py` + `TestValidateCloneUrl` | ⬜ |
-| 2 | `_remote_origin` + `_normalize_remote` helpers in `common.py` | ⬜ |
-| 3 | `cexp_clone_repo`: url validation + enriched collision message (same/different origin) | ⬜ |
-| 4 | `cexp_list_repos`: add `origin` field | ⬜ |
-| 5 | Tests: `git daemon` fixture in `conftest.py`, migrate all `file://` clones (repos/files_search/commits/valves), new collision/origin/url cases | ⬜ |
-| 6 | Docs: `README.md`, `META_MODEL_PROMPT.md`, `DESIGN.md` §5.6 + §12.2 | ⬜ |
-| 7 | Regenerate `dist/`, full suite, final checks | ⬜ |
+| 1 | `_validate_clone_url` in `common.py` + `TestValidateCloneUrl` | ✅ |
+| 2 | `_remote_origin` + `_normalize_remote` helpers in `common.py` | ✅ |
+| 3 | `cexp_clone_repo`: url validation + enriched collision message (same/different origin) | ✅ |
+| 4 | `cexp_list_repos`: add `origin` field | ✅ |
+| 5 | Tests: `git daemon` fixture in `conftest.py`, migrate all `file://` clones (repos/files_search/commits/valves), new collision/origin/url cases | ✅ |
+| 6 | Docs: `README.md`, `META_MODEL_PROMPT.md`, `DESIGN.md` §5.6 + §12.2 | ✅ |
+| 7 | Regenerate `dist/`, full suite, final checks | ✅ |
 
 Each step ends with: `python build.py`, `python -m pytest` (all green),
 commit, push, then control returns to the user.
@@ -168,25 +168,14 @@ async def _remote_origin(self, root: str) -> str:
 
 ### 2.3 `_normalize_remote(url: str) -> str` (comparison-only)
 
-Used to decide "same origin" for the collision message. Lowercases
-scheme+host, strips a trailing `.git` and trailing `/`, keeps the path case
-(git hosting paths are case-sensitive). Not used for anything else.
-
-```python
-def _normalize_remote(url: str) -> str:
-    url = (url or "").strip()
-    if "://" not in url:
-        return url
-    scheme, rest = url.split("://", 1)
-    host, _, path = rest.partition("/")
-    path = path.rstrip("/")
-    if path.endswith(".git"):
-        path = path[:-4]
-    return f"{scheme.lower()}://{host.lower()}/{path}"
-```
-
-So `https://github.com/o/r` and `https://github.com/o/r.git` compare equal;
-`https://github.com/o/r` vs `https://gitlab.com/o/r` compare different.
+Used to decide "same origin" for the collision message. Compares the logical
+origin: lowercases the host (without any userinfo), strips a trailing `.git`
+and trailing `/`, keeps the path case-sensitive (git hosting paths are
+case-sensitive). **Scheme and ssh user are NOT part of the comparison**:
+`https://github.com/o/r`, `ssh://git@github.com/o/r` and
+`https://github.com/o/r.git` all compare equal — the same logical repo on
+the same provider, just a different transport. A real namespace collision is
+therefore a *different host* (github vs gitlab), not a different scheme.
 
 ---
 
@@ -315,50 +304,33 @@ the clone error so the model understands "missing credential", not "bad url".
   exact directory name under the base path (no `.git` suffix appended;
   requesting `name.git` maps to a directory literally named `name.git`).
 - `--export-all` is required (without it, repos are refused).
+- Because the daemon base is session-scoped and shared across test files,
+  every source repo must live under a UNIQUE directory name (the fixtures
+  use `uuid` suffixes; inline sources use descriptive prefixes such as
+  `src-cap-N`, `src-list-2`). Reusing a name across tests silently reuses an
+  already-initialized repo and makes the second test's commits a no-op.
 
 **Fixture design** (in `conftest.py`, shared by all four test files):
 
-```python
-@pytest.fixture(scope="session")
-def git_daemon(tmp_path_factory):
-    base = tmp_path_factory.mktemp("daemon")
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]  # reserve a free port, then release
-    proc = subprocess.Popen(
-        ["git", "daemon", "--reuseaddr", "--export-all",
-         f"--base-path={base}", "--listen=127.0.0.1", f"--port={port}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-    )
-    deadline = time.time() + 10  # wait until the port accepts connections
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"git daemon exited early: {proc.stderr.read()!r}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                break
-        except OSError:
-            time.sleep(0.05)
-    yield base, port
-    proc.terminate()
-    proc.wait(timeout=5)
+- `git_daemon` (session-scoped) yields `(base, port, url_for)`; `url_for(path)`
+  maps a path under base to `git://127.0.0.1:<port>/<relative>` (paths outside
+  the base map to their basename, which the daemon refuses — used by the
+  failed-clone cleanup test).
+- `DaemonSource(Path)` carries a precomputed `url` attribute; `daemon_source(
+  git_daemon, name)` builds one under the base. Test files' source fixtures
+  return a `DaemonSource` and `clone_source`/`src_url` use `source.url`, so
+  existing test signatures did not need to change.
 
+**Migration** (done, mechanical, all four test files):
 
-def daemon_url(base: Path, port: int, name: str) -> str:
-    return f"git://127.0.0.1:{port}/{name}"
-```
-
-**Migration** (mechanical, all four test files):
-
-- `tests/test_tools_repos.py`: `src_url(source)` → `daemon_url(base, port, "src")`
-  and the `source_repo`/per-test source repos are created **under the daemon
-  base dir** (the fixture `base`), since the daemon only serves that tree.
-  `test_failed_clone_cleans_partial_dir` clones a nonexistent dir → daemon
-  answers "access denied" → clone fails → cleanup path still exercised.
+- `tests/test_tools_repos.py`: `src_url(source)` now returns the source's
+  precomputed `git://` URL; inline sources (`src-list-2`, `src-cap-N`,
+  `src-fallback`, `src-semver`, `does-not-exist`) are created under the daemon
+  base. `test_failed_clone_cleans_partial_dir` clones a nonexistent dir →
+  daemon answers "access denied" → clone fails → cleanup path still exercised.
 - `tests/test_tools_files_search.py`, `tests/test_tools_commits.py`,
-  `tests/test_valves.py`: same replacement for their `file://{source}` clones
-  (files_search:74, commits:79/114, valves:97/115). Their setup fixtures move
-  their source repos under the daemon base too.
+  `tests/test_valves.py`: their source fixtures are `DaemonSource`s and clones
+  use `source.url` instead of `file://{source}`.
 - `test_invalid_url_rejected` (`url="-o"`) keeps passing unchanged: the new
   validator emits `invalid clone url` with the same prefix.
 

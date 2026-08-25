@@ -40,6 +40,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Constants (DESIGN.md §5.2, §9.4, §9.7)
@@ -81,6 +82,14 @@ _REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/+-]*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _RELEASE_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)([-+].*)?$")
+
+# Clone-URL allow-list (Enhancement B, ENHANCEMENT_B.md §2.1). Only these
+# schemes may appear in a cexp_clone_repo `url` override. Everything else
+# (ext::/sh:: command URLs, file://, ftp, rsync, ...) is rejected.
+ALLOWED_CLONE_SCHEMES = {"https", "http", "git", "ssh"}
+# git's scp-like syntax: user@host:path (no scheme). No port is possible in
+# this form (use ssh://host:port/path), matching git's own semantics.
+_SCPLIKE_RE = re.compile(r"^([^/@:]+)@([^/:]+):(.+)$")
 
 
 def _release_sort_key(tag: str) -> tuple:
@@ -646,6 +655,82 @@ def validate_ref(ref: str) -> str:
     return ref
 
 
+def validate_clone_url(url: str) -> str:
+    """Validate and normalize a clone `url` override before it reaches git
+    (Enhancement B, ENHANCEMENT_B.md §2.1).
+
+    Protocol allow-list (https/http/git/ssh). Everything else is rejected,
+    which closes the RCE gap (`ext::`/`sh::` command URLs) and the local
+    exfiltration gap (`file://`), and drops stray protocols (ftp, rsync, ...).
+    scp-like "user@host:path" is normalized to ssh://user@host/path exactly
+    like git does (no port syntax in scp-like form; use ssh://host:port/path).
+    Credentials in the URL are rejected (they would be persisted in
+    <repo>/.git/config), except the ssh username (git@github.com is the
+    normal ssh form). Returns the normalized URL.
+    """
+    url = (url or "").strip()
+    if not url:
+        raise ToolError("invalid clone url: empty")
+    if url.startswith("-"):
+        raise ToolError(f"invalid clone url: {url!r}", cause="urls may not start with '-'")
+    if any(c.isspace() or ord(c) < 32 for c in url):
+        raise ToolError(
+            f"invalid clone url: {url!r}",
+            cause="urls may not contain whitespace or control characters",
+        )
+    m = _SCPLIKE_RE.match(url)
+    if m and "://" not in url:
+        user, host, path = m.group(1), m.group(2), m.group(3)
+        url = f"ssh://{user}@{host}/{path}"
+    parts = urlparse(url)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ALLOWED_CLONE_SCHEMES:
+        raise ToolError(
+            f"invalid clone url: {url!r}",
+            cause=f"protocol must be one of {sorted(ALLOWED_CLONE_SCHEMES)}; got {scheme or '(none)'}",
+        )
+    if parts.query or parts.fragment:
+        raise ToolError(
+            f"invalid clone url: {url!r}", cause="query strings and fragments are not allowed"
+        )
+    if scheme == "ssh":
+        if parts.password is not None:
+            raise ToolError(
+                f"invalid clone url: {url!r}", cause="ssh passwords in URLs are not allowed"
+            )
+    elif parts.username is not None or parts.password is not None:
+        raise ToolError(
+            f"invalid clone url: {url!r}",
+            cause="credentials in URLs are not allowed (they would be persisted in the repo config); use preconfigured credentials instead",
+        )
+    return url
+
+
+def _normalize_remote(url: str) -> str:
+    """Canonical form for COMPARING remotes (collision detection only,
+    ENHANCEMENT_B.md §2.3).
+
+    Compares the logical origin: lowercases the host (without any userinfo),
+    keeps the path case-sensitive (git hosting paths are), and strips a
+    trailing ".git" and trailing "/". Scheme and ssh user are intentionally
+    NOT part of the comparison, so https://github.com/o/r,
+    ssh://git@github.com/o/r and https://github.com/o/r.git all compare
+    equal: the same logical repo on the same provider, just a different
+    transport.
+    """
+    url = (url or "").strip()
+    if "://" not in url:
+        return url
+    _, rest = url.split("://", 1)
+    host, _, path = rest.partition("/")
+    if "@" in host:
+        host = host.rsplit("@", 1)[1]
+    path = path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return f"{host.lower()}/{path}"
+
+
 def resolve_repo_root(repo: str, repos_path: str) -> Path:
     """Validate `<owner>/<name>` (exactly two components) and return its root.
 
@@ -663,6 +748,18 @@ def resolve_repo_root(repo: str, repos_path: str) -> Path:
     if not repo_component_ok(name):
         raise ToolError(f"invalid name component {name!r} in repo {repo!r}")
     return Path(repos_path) / owner / name
+
+
+async def _remote_origin(root: str) -> str:
+    """The repo's remote origin URL (git -C <root> remote get-url origin), or
+    "" when the clone has no origin. Used by the clone-collision message and
+    by cexp_list_repos' `origin` field (Enhancement B, ENHANCEMENT_B.md §2.2)."""
+    res = await run_allowed(
+        git_args("-C", root, "remote", "get-url", "origin"), TIMEOUT_SEARCH
+    )
+    if res.returncode != 0:
+        return ""  # "No such remote 'origin'" -> rc != 0
+    return res.stdout.strip()
 
 
 def resolve_path(repo: str, path: Optional[str], repos_path: str) -> Path:
@@ -810,14 +907,19 @@ class Tools:
 
         Use when a repository is not yet present locally. The repository is
         cloned to <repos_path>/<owner>/<name>. If the target already exists,
-        nothing is modified - use cexp_fetch_repo, cexp_pull_repo, or cexp_list_repos instead.
-        After cloning, the requested ref is checked out. Returns a JSON object
-        with repo, path, default_branch, ref, and status. Only plain
-        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
-        rejected.
+        nothing is modified - the existing clone's origin is reported: use
+        cexp_fetch_repo/cexp_pull_repo when it is the same logical repo, or
+        cexp_list_repos to review existing clones (one clone per
+        <owner>/<name> is supported). Protocols https, http, git, and ssh are
+        allowed (scp-like git@host:path works); file:// and other protocols
+        are rejected, and URLs must not contain credentials (ssh requires
+        preconfigured credentials). After cloning, the requested ref is
+        checked out. Returns a JSON object with repo, path, default_branch,
+        ref, and status. Only plain branch/tag/commit refs are accepted;
+        revision expressions (HEAD~1) are rejected.
 
         :param repo: "<owner>/<name>" of the repository to clone (required).
-        :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git.
+        :param url: Optional full clone URL; overrides the default https://github.com/<owner>/<name>.git; protocols https, http, git, ssh are allowed (scp-like git@host:path works); credentials in the URL are rejected; ssh requires preconfigured credentials.
         :param ref: Optional branch, tag, or the special value "release", which resolves to the most recent release tag.
         """
         try:
@@ -830,22 +932,34 @@ class Tools:
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
-        if root.exists():
-            raise ToolError(
-                f"{repo} already exists at {root}; use cexp_fetch_repo, cexp_pull_repo, "
-                "or cexp_list_repos instead (no destructive overwrite)"
-            )
         if ref is not None:
             # Validated BEFORE cloning so a bad ref never triggers an
             # (unnecessary) clone; the special value "release" also passes.
             ref = validate_ref(ref)
         if url is not None:
-            url = url.strip()
-            if not url or url.startswith("-"):
-                raise ToolError(f"invalid clone url: {url!r}")
+            # Protocol allow-list + scp-like normalization BEFORE the clone so
+            # a malicious URL never reaches git (ENHANCEMENT_B.md §2.1).
+            url = validate_clone_url(url)
             remote = url
         else:
             remote = f"https://github.com/{repo}.git"
+
+        if root.exists():
+            existing = await _remote_origin(str(root))
+            if existing and _normalize_remote(existing) == _normalize_remote(remote):
+                raise ToolError(
+                    f"repo already exists: {repo} at {root} (cloned from {existing}, same origin)",
+                    cause="use cexp_fetch_repo or cexp_pull_repo to update it (no destructive overwrite)",
+                )
+            raise ToolError(
+                f"repo already exists: {repo} at {root} (cloned from {existing or 'unknown origin'})",
+                cause=(
+                    f"namespace collision: the existing clone comes from a different origin than the "
+                    f"requested {remote}. One clone per <owner>/<name> is supported; use "
+                    "cexp_fetch_repo/cexp_pull_repo if it is the same logical repo, or "
+                    "cexp_list_repos to review existing clones"
+                ),
+            )
 
         root.parent.mkdir(parents=True, exist_ok=True)
         res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
@@ -1045,11 +1159,13 @@ class Tools:
     async def cexp_list_repos(self) -> str:
         """List all cloned repositories under the storage area.
 
-        Use to see what is already cloned (owner/name and current branch)
-        before deciding whether to clone, fetch, or pull. Returns a JSON
-        object with an items array of {"repo", "branch"} entries. No parameters.
+        Use to see what is already cloned (owner/name, current branch, and
+        the origin URL each clone was made from, which shows the provider and
+        protocol) before deciding whether to clone, fetch, or pull. Returns a
+        JSON object with an items array of {"repo", "branch", "origin"}
+        entries. No parameters.
 
-        :return: a JSON object with an `items` array of {"repo", "branch"} entries, sorted.
+        :return: a JSON object with an `items` array of {"repo", "branch", "origin"} entries, sorted.
         """
         try:
             return await self._list_repos()
@@ -1073,6 +1189,7 @@ class Tools:
                     {
                         "repo": f"{owner_dir.name}/{repo_dir.name}",
                         "branch": await self._current_branch(str(repo_dir)),
+                        "origin": await _remote_origin(str(repo_dir)),
                     }
                 )
         if not entries:
