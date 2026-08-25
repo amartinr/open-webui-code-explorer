@@ -2,7 +2,7 @@
 title: Code Explorer - Files & Search
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.1
+version: 1.2.2
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: List, read, and search files in cloned repositories for the meta model. Read-only with respect to source code; never modifies repository contents. Pure-Python implementation: no external fd/rg binaries required.
 required_open_webui_version: 0.9.6
