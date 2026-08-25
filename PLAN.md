@@ -27,7 +27,7 @@
 | 9 | E6: "repo not found" suggests existing clones (common.py helper + templates + tests) | ✅ |
 | 10 | E7: `cexp_search_history` pickaxe tool (template + tests) | ✅ |
 | 11 | E8: `cexp_list_branches` + `merged` (template + tests) | ✅ |
-| 12 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 13 -> 14) | ☐ |
+| 12 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 14 -> 15) | ✅ |
 | 13 | E10: `size` field in `cexp_list_repos` (template + tests) | ☐ |
 | 14 | Docs (`DESIGN.md` §6/§7, `README.md`, `META_MODEL_PROMPT.md`) + version bump `1.2.0` (4 places) | ☐ |
 | 15 | Regenerate `dist/`, full suite, final checks (grep for `import common` / markers, combined tool count) | ☐ |

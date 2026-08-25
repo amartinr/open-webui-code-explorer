@@ -1322,6 +1322,65 @@ class Tools:
         return res.stdout.strip() or "?"
 
     # ------------------------------------------------------------------
+    # cexp_remove_repo
+    # ------------------------------------------------------------------
+
+    async def cexp_remove_repo(self, repo: str, dry_run: bool = False) -> str:
+        """Delete a cloned repository (or preview the deletion).
+
+        Use to free disk space or remove a clone you no longer need. Resolves
+        <repos_path>/<owner>/<name>; the target must exist and must resolve
+        strictly inside <repos_path> (symlinked roots are refused). With
+        dry_run=True, returns the path and its on-disk size in bytes without
+        deleting. With dry_run=False, deletes the directory tree and returns a
+        confirmation. Returns a JSON object with {"repo", "path", "dry_run",
+        "size", "removed"}.
+
+        :param repo: "<owner>/<name>" of the repository to remove (required).
+        :param dry_run: Optional; if True, only report the path and size, do not delete.
+        """
+        try:
+            return await self._remove_repo(repo, dry_run)
+        except Exception as e:
+            return error_string(e)
+
+    async def _remove_repo(self, repo: str, dry_run: bool) -> str:
+        repos_path = resolve_repos_path(self.valves.repos_path)
+        root = resolve_repo_root(repo, repos_path)
+        if not root.is_dir():
+            raise ToolError(f"repository not found: {repo}", kind="not_found")
+        # The target must resolve strictly inside the resolved repos_path and
+        # must not be a symlink (same guard style as resolve_path).
+        base = Path(repos_path).resolve()
+        resolved = root.resolve()
+        if resolved != base and base not in resolved.parents:
+            raise ToolError(f"refusing to remove path outside repos_path: {root}")
+        if root.is_symlink():
+            raise ToolError(f"refusing to remove symlinked root: {root}")
+
+        def _dir_size(p: Path) -> int:
+            total = 0
+            for dp, _, files in os.walk(p):
+                for f in files:
+                    try:
+                        total += (Path(dp) / f).stat().st_size
+                    except OSError:
+                        pass
+            return total
+
+        size = await asyncio.to_thread(_dir_size, root)
+        if dry_run:
+            return json_output(
+                {"repo": repo, "path": str(root), "dry_run": True, "size": size, "removed": False},
+                self.valves.max_bytes,
+            )
+        await asyncio.to_thread(shutil.rmtree, root, ignore_errors=False)
+        return json_output(
+            {"repo": repo, "path": str(root), "dry_run": False, "size": size, "removed": True},
+            self.valves.max_bytes,
+        )
+
+    # ------------------------------------------------------------------
     # shared internals
     # ------------------------------------------------------------------
 

@@ -588,6 +588,65 @@ class TestListRepos:
         assert isinstance(result["truncated"].get("hint"), str)  # E5
 
 
+# ---------------------------------------------------------------------------
+# cexp_remove_repo
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveRepo:
+    async def test_dry_run_does_not_delete_and_reports_size(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
+        root = repos_path / "testowner" / "testrepo"
+
+        out = await tools.cexp_remove_repo("testowner/testrepo", dry_run=True)
+        result = parse_json(out)
+        assert result["repo"] == "testowner/testrepo"
+        assert result["dry_run"] is True
+        assert result["removed"] is False
+        assert result["size"] > 0
+        assert root.exists()  # nothing deleted
+
+    async def test_real_run_deletes(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
+        root = repos_path / "testowner" / "testrepo"
+
+        out = await tools.cexp_remove_repo("testowner/testrepo")
+        result = parse_json(out)
+        assert result["dry_run"] is False
+        assert result["removed"] is True
+        assert result["path"] == str(root)
+        assert not root.exists()
+        # And the repo no longer appears in list_repos.
+        out = await tools.cexp_list_repos()
+        assert out.startswith("Not found:")  # nothing left
+
+    async def test_missing_repo_not_found(self, repos_path):
+        tools = make_tools(repos_path)
+        out = await tools.cexp_remove_repo("nope/nothing")
+        assert out.startswith("Not found:")
+        assert "not found" in out
+
+    async def test_malformed_repo_rejected(self, repos_path):
+        tools = make_tools(repos_path)
+        out = await tools.cexp_remove_repo("no-slash")
+        assert out.startswith("Error:")
+
+    async def test_symlinked_root_rejected(self, repos_path, source_repo):
+        """A root that is a symlink (even pointing inside repos_path) is
+        refused: removal must never follow links out of the tree."""
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("testowner/testrepo", url=src_url(source_repo))
+        (repos_path / "testowner" / "testrepo").rename(repos_path / "real")
+        (repos_path / "testowner" / "testrepo").symlink_to(repos_path / "real")
+
+        out = await tools.cexp_remove_repo("testowner/testrepo")
+        assert out.startswith("Error:")
+        assert "symlink" in out
+        assert (repos_path / "real" / ".git").exists()
+
+
 class TestReleaseSortKey:
     def test_highest_semver_wins(self):
         tags = ["v1.0.0-rc1", "v1.0.0", "v0.9.9", "2.0.0", "v1.10.0", "v1.9.0"]
@@ -631,7 +690,7 @@ class TestOpenWebUILoading:
             and not func.startswith("_")  # noqa: SIM102
             and not inspect.isclass(getattr(tools, func))
         ]
-        assert sorted(discovered) == ["cexp_clone_repo", "cexp_fetch_repo", "cexp_list_repos", "cexp_pull_repo"]
+        assert sorted(discovered) == ["cexp_clone_repo", "cexp_fetch_repo", "cexp_list_repos", "cexp_pull_repo", "cexp_remove_repo"]
         for name in discovered:
             assert asyncio.iscoroutinefunction(getattr(tools, name))
             assert getattr(tools, name).__doc__
