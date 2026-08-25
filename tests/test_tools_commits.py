@@ -193,6 +193,37 @@ class TestListCommits:
         assert subjects[0] == "fix: return 2"
         assert all(i["hash"] for i in result["items"])
 
+    async def test_author_and_date_fields(self, repos_path, history_repo):
+        """E4: items carry author (name) and date (commit date, YYYY-MM-DD)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_list_commits("testowner/testrepo")
+        items = parse_json(out)["items"]
+        assert items, "expected some commits"
+        for item in items:
+            assert set(item) == {"hash", "subject", "author", "date"}
+            assert item["author"] == "Test"  # IDENT user.name used by the fixture
+            assert len(item["date"]) == 10  # YYYY-MM-DD
+            y, m, d = item["date"].split("-")
+            assert 2000 <= int(y) and 1 <= int(m) <= 12 and 1 <= int(d) <= 31
+
+    async def test_date_is_the_commit_date(self, repos_path, history_repo):
+        """E4: the date field equals git's own commit date (--date=short)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_list_commits("testowner/testrepo")
+        item = parse_json(out)["items"][0]
+        root = repos_path / "testowner" / "testrepo"
+        res = await run_git(root, "log", "-1", "--format=%cd", "--date=short", item["hash"])
+        assert res.returncode == 0, res.stderr
+        assert item["date"] == res.stdout.strip()
+
+    async def test_author_date_in_range_mode(self, repos_path, history_repo):
+        """E4: the new fields appear in every list mode (range here)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_list_commits("testowner/testrepo", ref_a="v1.0.0", ref_b="main")
+        items = parse_json(out)["items"]
+        assert items
+        assert all({"hash", "subject", "author", "date"} <= set(i) for i in items)
+
     async def test_range(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_list_commits("testowner/testrepo", ref_a="v1.0.0", ref_b="main")

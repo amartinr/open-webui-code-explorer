@@ -1056,9 +1056,10 @@ class Tools:
         history. With ref_a and ref_b, shows commits reachable from ref_b but
         not from ref_a (git's ref_a..ref_b range). Capable of narrowing to a
         single file or directory. Returns a JSON object with an items array
-        of {"hash", "subject"} entries (newest first). Only plain
-        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
-        rejected.
+        of {"hash", "subject", "author", "date"} entries (newest first;
+        author is the commit author name, date is the commit date as
+        YYYY-MM-DD). Only plain branch/tag/commit refs are accepted; revision
+        expressions (HEAD~1) are rejected.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: Optional start ref (branch, tag, or commit).
@@ -1087,13 +1088,17 @@ class Tools:
             ref_a = validate_ref(ref_a)
         if ref_b:
             ref_b = validate_ref(ref_b)
-        args = git_args("-C", str(root), "log", "--oneline", "--no-decorate")
+        args = git_args("-C", str(root), "log", "--no-decorate")
         if first_parent:
             args.append("--first-parent")
         if ref_a and ref_b:
             args.append(f"{ref_a}..{ref_b}")
         elif ref_b:
             args.append(ref_b)
+        # Tab-separated hash/author/date(subject safe with spaces): author
+        # names may contain spaces, so a space split is not enough. Date is
+        # the commit date (--date=short -> YYYY-MM-DD).
+        args += ["--format=%h%x09%an%x09%cd%x09%s", "--date=short"]
         if path:
             args += ["--", path]
         res = await run_allowed(args, TIMEOUT_SEARCH)
@@ -1101,11 +1106,14 @@ class Tools:
             raise ToolError(f"list commits failed: {repo}", cause=trim_cause(res.stderr))
         items = []
         for line in res.stdout.splitlines():
-            line = line.strip()
             if not line:
                 continue
-            parts = line.split(" ", 1)
-            items.append({"hash": parts[0], "subject": parts[1] if len(parts) > 1 else ""})
+            parts = line.split("\t", 3)
+            if len(parts) < 4:
+                continue  # not a formatted line (defensive)
+            items.append(
+                {"hash": parts[0], "author": parts[1], "date": parts[2], "subject": parts[3]}
+            )
         data: dict = {"items": items}
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
