@@ -51,8 +51,9 @@ def test_valves_contract_identical(script):
     valves_cls = module.Tools.Valves
     fields = valves_cls.model_fields
 
-    assert set(fields) == set(REQUIRED_VALVES), (
-        f"{script}: valves {set(fields)} != required {set(REQUIRED_VALVES)}"
+    # Every script MUST declare the shared core contract.
+    assert set(REQUIRED_VALVES) <= set(fields), (
+        f"{script}: missing shared valves {set(REQUIRED_VALVES) - set(fields)}"
     )
     for name, (expected_type, expected_default) in REQUIRED_VALVES.items():
         field = fields[name]
@@ -62,6 +63,13 @@ def test_valves_contract_identical(script):
         assert field.default == expected_default, (
             f"{script}.{name}: default {field.default!r} != {expected_default!r}"
         )
+    # Only the scripts that can clone may add the allowed_hosts Valve (S3).
+    extras = set(fields) - set(REQUIRED_VALVES)
+    cloners = {"repos.py", "code_explorer.py"}
+    if script in cloners:
+        assert extras == {"allowed_hosts"}, f"{script}: unexpected extra valves {extras}"
+    else:
+        assert not extras, f"{script}: unexpected extra valves {extras}"
 
 
 def test_no_extra_or_missing_scripts():

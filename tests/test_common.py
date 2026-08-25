@@ -14,6 +14,7 @@ from common import (
     error_string,
     format_tool_error,
     git_args,
+    host_allowed,
     json_output,
     repo_component_ok,
     resolve_path,
@@ -234,6 +235,40 @@ class TestNormalizeRemote:
 # ---------------------------------------------------------------------------
 # resolve_repo_root (DESIGN.md §5.6)
 # ---------------------------------------------------------------------------
+
+
+class TestHostAllowed:
+    """S3: the allowed_hosts Valve host matcher (exact or subdomain suffix)."""
+
+    def test_empty_list_unrestricted(self):
+        assert host_allowed("github.com", "") is True
+        assert host_allowed("github.com", "   ") is True
+
+    def test_exact_match(self):
+        assert host_allowed("github.com", "github.com,gitlab.com") is True
+        assert host_allowed("gitlab.com", "github.com,gitlab.com") is True
+
+    def test_subdomain_allowed(self):
+        assert host_allowed("api.github.com", "github.com") is True
+        assert host_allowed("objects.githubusercontent.com", "githubusercontent.com") is True
+
+    def test_no_implicit_wildcard(self):
+        assert host_allowed("evilgithub.com", "github.com") is False
+        assert host_allowed("notgithub.com", "github.com") is False
+        assert host_allowed("github.com.evil.com", "github.com") is False
+        # raw.githubusercontent.com is NOT a subdomain of github.com (its SLD
+        # is githubusercontent.com), so it must NOT be allowed by github.com.
+        assert host_allowed("raw.githubusercontent.com", "github.com") is False
+        assert host_allowed("raw.githubusercontent.com", "githubusercontent.com") is True
+
+    def test_case_insensitive(self):
+        assert host_allowed("GITHUB.COM", "GitHub.com") is True
+
+    def test_host_not_in_list(self):
+        assert host_allowed("127.0.0.1", "github.com") is False
+
+    def test_empty_host(self):
+        assert host_allowed("", "github.com") is False
 
 
 class TestResolveRepoRoot:

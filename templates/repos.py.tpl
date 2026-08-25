@@ -24,6 +24,10 @@ class Tools:
             "",
             description="Base directory for repository clones. Empty -> $OWUI_REPOS_PATH -> /usr/local/src. A dedicated volume must be mounted there and the process needs read/write permission; this Valve is a logical override only.",
         )
+        allowed_hosts: str = Field(
+            "",
+            description="Comma-separated host allow-list for cexp_clone_repo. Empty (default): no restriction. When set, only origins whose host matches exactly or is a subdomain of a listed host may be cloned (e.g. github.com also allows api.github.com).",
+        )
         max_results: int = Field(
             50, description="Cap on item counts (repositories, refs)."
         )
@@ -84,6 +88,17 @@ class Tools:
             remote = url
         else:
             remote = f"https://github.com/{repo}.git"
+
+        # S3: optional host allow-list Valve (empty = unrestricted). Applied
+        # after validate_clone_url, so only allow-listed protocols reach it.
+        allowed_hosts = getattr(self.valves, "allowed_hosts", "")
+        if allowed_hosts and allowed_hosts.strip():
+            host = urlparse(remote).hostname or ""
+            if not host_allowed(host, allowed_hosts):
+                raise ToolError(
+                    f"host not allowed: {host or '(none)'!r} (allowed_hosts: {allowed_hosts.strip()!r})",
+                    cause="the allowed_hosts Valve restricts which origins cexp_clone_repo may clone from",
+                )
 
         if root.exists():
             existing = await _remote_origin(str(root))

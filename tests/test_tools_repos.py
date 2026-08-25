@@ -283,6 +283,47 @@ class TestCloneUrlAndCollision:
             assert "invalid clone url" in out, bad
             assert not (repos_path / "o" / "r").exists(), bad
 
+    # ------------------------------------------------------------------
+    # S3: allowed_hosts Valve (host allow-list for clone)
+    # ------------------------------------------------------------------
+
+    async def test_allowed_hosts_unrestricted_by_default(self, repos_path, source_repo):
+        """Empty Valve = no restriction (backward compatible)."""
+        tools = make_tools(repos_path)
+        assert tools.valves.allowed_hosts == ""
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+
+    async def test_allowed_hosts_rejects_other_hosts(self, repos_path, source_repo):
+        """Host outside the list -> Error and no directory created."""
+        tools = make_tools(repos_path)
+        tools.valves.allowed_hosts = "github.com"
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert out.startswith("Error:")
+        assert "host not allowed" in out
+        assert "127.0.0.1" in out
+        assert not (repos_path / "o" / "r").exists()
+
+    async def test_allowed_hosts_allows_listed_host(self, repos_path, source_repo):
+        """The daemon host (127.0.0.1) listed -> clone proceeds."""
+        tools = make_tools(repos_path)
+        tools.valves.allowed_hosts = "127.0.0.1"
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+        assert (repos_path / "o" / "r" / ".git").exists()
+
+    async def test_allowed_hosts_credentials_still_rejected(self, repos_path):
+        """Credential rules are enforced before the host check: a credential
+        URL is rejected even when its host is allow-listed."""
+        tools = make_tools(repos_path)
+        tools.valves.allowed_hosts = "github.com"
+        out = await tools.cexp_clone_repo(
+            "o/r", url="https://user:pass@github.com/o/r.git"
+        )
+        assert out.startswith("Error:")
+        assert "invalid clone url" in out
+        assert not (repos_path / "o" / "r").exists()
+
 
 # ---------------------------------------------------------------------------
 # cexp_fetch_repo

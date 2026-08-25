@@ -632,6 +632,22 @@ def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     return True
 
 
+def host_allowed(host: str, allowed_hosts: str) -> bool:
+    """True iff `host` is allowed by the comma-separated `allowed_hosts`
+    Valve (S3). Exact host match or suffix match on a dot boundary: listing
+    "github.com" allows "github.com" and "raw.githubusercontent.com" but not
+    "evilgithub.com" or "notgithub.com". An empty/whitespace-only list means
+    no restriction (backward compatible). Host matching is case-insensitive.
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    allowed = [h.strip().lower() for h in (allowed_hosts or "").split(",") if h.strip()]
+    if not allowed:
+        return True
+    return any(host == entry or host.endswith("." + entry) for entry in allowed)
+
+
 def repo_component_ok(component: str) -> bool:
     """True iff component matches ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ and is not "." or "..".
 
@@ -903,6 +919,10 @@ class Tools:
             "",
             description="Base directory for repository clones. Empty -> $OWUI_REPOS_PATH -> /usr/local/src. A dedicated volume must be mounted there and the process needs read/write permission; this Valve is a logical override only.",
         )
+        allowed_hosts: str = Field(
+            "",
+            description="Comma-separated host allow-list for cexp_clone_repo. Empty (default): no restriction. When set, only origins whose host matches exactly or is a subdomain of a listed host may be cloned (e.g. github.com also allows api.github.com).",
+        )
         max_results: int = Field(
             50, description="Cap on item counts (repositories, refs)."
         )
@@ -963,6 +983,17 @@ class Tools:
             remote = url
         else:
             remote = f"https://github.com/{repo}.git"
+
+        # S3: optional host allow-list Valve (empty = unrestricted). Applied
+        # after validate_clone_url, so only allow-listed protocols reach it.
+        allowed_hosts = getattr(self.valves, "allowed_hosts", "")
+        if allowed_hosts and allowed_hosts.strip():
+            host = urlparse(remote).hostname or ""
+            if not host_allowed(host, allowed_hosts):
+                raise ToolError(
+                    f"host not allowed: {host or '(none)'!r} (allowed_hosts: {allowed_hosts.strip()!r})",
+                    cause="the allowed_hosts Valve restricts which origins cexp_clone_repo may clone from",
+                )
 
         if root.exists():
             existing = await _remote_origin(str(root))

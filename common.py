@@ -619,6 +619,22 @@ def glob_match(relpath: str, includes: List[str], excludes: List[str]) -> bool:
     return True
 
 
+def host_allowed(host: str, allowed_hosts: str) -> bool:
+    """True iff `host` is allowed by the comma-separated `allowed_hosts`
+    Valve (S3). Exact host match or suffix match on a dot boundary: listing
+    "github.com" allows "github.com" and "raw.githubusercontent.com" but not
+    "evilgithub.com" or "notgithub.com". An empty/whitespace-only list means
+    no restriction (backward compatible). Host matching is case-insensitive.
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    allowed = [h.strip().lower() for h in (allowed_hosts or "").split(",") if h.strip()]
+    if not allowed:
+        return True
+    return any(host == entry or host.endswith("." + entry) for entry in allowed)
+
+
 def repo_component_ok(component: str) -> bool:
     """True iff component matches ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ and is not "." or "..".
 

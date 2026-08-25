@@ -89,6 +89,7 @@ def build_combined(common_code: str, methods: List[Tuple[str, str]]) -> str:
         + "\n"
         + "    class Valves(BaseModel):\n"
         + '        repos_path: str = Field(\n            "",\n            description="Base directory for repository clones. Empty -> $OWUI_REPOS_PATH -> /usr/local/src. A dedicated volume must be mounted there and the process needs read/write permission; this Valve is a logical override only.",\n        )\n'
+        + '        allowed_hosts: str = Field(\n            "",\n            description="Comma-separated host allow-list for cexp_clone_repo. Empty (default): no restriction. When set, only origins whose host matches exactly or is a subdomain of a listed host may be cloned.",\n        )\n'
         + "        max_results: int = Field(\n            50, description=\"Cap on item counts (files, matches, commits, branches, tags).\"\n        )\n"
         + "        max_lines: int = Field(\n            200, description=\"Cap on output lines. Whichever cap is hit first truncates.\"\n        )\n"
         + "        max_bytes: int = Field(\n            20480, description=\"Hard byte cap on tool output (20 KB default).\"\n        )\n"
