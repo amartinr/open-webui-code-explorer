@@ -16,7 +16,7 @@
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | S1: re-validate remote origin before fetch/pull (template + tests) | ☐ |
+| 1 | S1: re-validate remote origin before fetch/pull (template + tests) | ✅ |
 | 2 | S2: purge hostile `GIT_*` from subprocess env (common.py + tests) | ☐ |
 | 3 | S3: `allowed_hosts` Valve on the Repos script (common.py + template + Valves contract + tests) | ☐ |
 | 4 | E1: `cexp_show_commit` + `stat` (template + tests) | ☐ |

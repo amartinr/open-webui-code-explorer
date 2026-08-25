@@ -1068,6 +1068,7 @@ class Tools:
     async def _fetch_repo(self, repo: str) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
+        await self._validate_origin(str(root), repo, "fetch")
         before = await self._list_refs(str(root))
         res = await run_allowed(
             git_args("-C", str(root), "fetch", "--all", "--tags", "--prune", "--no-progress"),
@@ -1139,6 +1140,7 @@ class Tools:
     async def _pull_repo(self, repo: str) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
+        await self._validate_origin(str(root), repo, "pull")
         res = await run_allowed(git_args("-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"), TIMEOUT_SEARCH)
         branch = res.stdout.strip()
         if branch == "HEAD":
@@ -1232,6 +1234,20 @@ class Tools:
     # ------------------------------------------------------------------
     # shared internals
     # ------------------------------------------------------------------
+
+    async def _validate_origin(self, root: str, repo: str, action: str) -> str:
+        """Re-validate the remote origin through the clone-URL allow-list
+        before any network git command runs (fetch/pull). A tampered
+        .git/config (e.g. remote.origin.url = ext::sh -c '...') must never
+        reach git: the strict allow-list currently only guards clone."""
+        origin = await _remote_origin(root)
+        try:
+            return validate_clone_url(origin)
+        except ToolError as e:
+            raise ToolError(
+                f"cannot {action}: remote origin is not allow-listed",
+                cause=f"origin {origin or '(none)'!r}: {e.message}",
+            )
 
     def _ensure_repo_exists(self, root: Path, repo: str) -> None:
         if not root.is_dir() or not (root / ".git").exists():

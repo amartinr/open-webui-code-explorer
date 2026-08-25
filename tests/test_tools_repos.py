@@ -337,6 +337,44 @@ class TestFetchRepo:
         assert out.startswith("Not found:")
         assert "not cloned yet" in out
 
+    @pytest.mark.parametrize(
+        "bad_origin",
+        [
+            "ext::sh -c 'id'",  # git command-execution URL (RCE vector)
+            "file:///tmp/evil",  # local exfiltration
+            "https://user:pass@github.com/o/r.git",  # credentials would persist
+        ],
+    )
+    async def test_fetch_rejects_tampered_origin_before_git(
+        self, repos_path, source_repo, bad_origin, monkeypatch
+    ):
+        """S1: a tampered .git/config origin must fail fetch BEFORE git runs:
+        the allow-list only guards clone, so fetch re-validates the origin and
+        refuses to invoke git when it is not allow-listed."""
+        import dist.repos as repos_mod
+
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        root = repos_path / "o" / "r"
+        res = await run_git(root, "remote", "set-url", "origin", bad_origin)
+        assert res.returncode == 0, res.stderr
+
+        calls = []
+        real = repos_mod.run_allowed
+
+        async def spy(argv, timeout, **kwargs):
+            if "fetch" in argv:
+                calls.append(argv)
+            return await real(argv, timeout, **kwargs)
+
+        monkeypatch.setattr(repos_mod, "run_allowed", spy)
+
+        out = await tools.cexp_fetch_repo("o/r")
+        assert out.startswith("Error:")
+        assert "not allow-listed" in out
+        assert bad_origin in out  # cause names the offending origin
+        assert calls == []  # git fetch was never invoked
+
 
 # ---------------------------------------------------------------------------
 # cexp_pull_repo
@@ -404,6 +442,34 @@ class TestPullRepo:
         tools = make_tools(repos_path)
         out = await tools.cexp_pull_repo("o/r")
         assert out.startswith("Not found:")
+
+    @pytest.mark.parametrize("bad_origin", ["ext::sh -c 'id'", "file:///tmp/evil"])
+    async def test_pull_rejects_tampered_origin_before_git(
+        self, repos_path, source_repo, bad_origin, monkeypatch
+    ):
+        """S1: same guard for pull - a tampered origin must never reach git."""
+        import dist.repos as repos_mod
+
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        root = repos_path / "o" / "r"
+        res = await run_git(root, "remote", "set-url", "origin", bad_origin)
+        assert res.returncode == 0, res.stderr
+
+        calls = []
+        real = repos_mod.run_allowed
+
+        async def spy(argv, timeout, **kwargs):
+            if "pull" in argv:
+                calls.append(argv)
+            return await real(argv, timeout, **kwargs)
+
+        monkeypatch.setattr(repos_mod, "run_allowed", spy)
+
+        out = await tools.cexp_pull_repo("o/r")
+        assert out.startswith("Error:")
+        assert "not allow-listed" in out
+        assert calls == []  # git pull was never invoked
 
 
 # ---------------------------------------------------------------------------
