@@ -163,6 +163,7 @@ def test_combined_script_loads_and_discovers_all_tools():
         "cexp_list_tags",
         "cexp_pull_repo",
         "cexp_read_file",
+        "cexp_search_history",
         "cexp_search_symbol",
         "cexp_search_text",
         "cexp_show_commit",

@@ -2186,6 +2186,87 @@ class Tools:
             data, self.valves.max_bytes, hint="use path=<file> or first_parent=True to narrow the history, or raise the max_results Valve"
         )
 
+    async def cexp_search_history(
+        self,
+        repo: str,
+        query: str,
+        path: Optional[str] = None,
+        ref_a: Optional[str] = None,
+        ref_b: Optional[str] = None,
+    ) -> str:
+        """Search commit history for when a string was introduced or removed.
+
+        Git pickaxe search (-S): finds commits that changed the number of
+        occurrences of the given string, i.e. when it was introduced or
+        removed. The query is a literal string (not a regex). Returns a JSON
+        object with an items array of {"hash", "subject", "author", "date"}
+        entries, newest first, capped by max_results with the standard
+        truncated metadata. No matches -> empty items array (not an error).
+        Only plain branch/tag/commit refs are accepted; revision expressions
+        (HEAD~1) are rejected.
+
+        :param repo: "<owner>/<name>" of an already-cloned repository.
+        :param query: Literal string to search the history for (required; up to 512 characters).
+        :param path: Optional path to narrow the history to.
+        :param ref_a: Optional start ref (branch, tag, or commit).
+        :param ref_b: Optional end ref (branch, tag, or commit); with ref_a forms a ref_a..ref_b range.
+        """
+        try:
+            return await self._search_history(repo, query, path, ref_a, ref_b)
+        except Exception as e:
+            return error_string(e)
+
+    async def _search_history(
+        self,
+        repo: str,
+        query: str,
+        path: Optional[str],
+        ref_a: Optional[str],
+        ref_b: Optional[str],
+    ) -> str:
+        root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
+        self._ensure_repo_exists(root, repo)
+        if not query or not query.strip():
+            raise ToolError("query must not be empty")
+        if "\x00" in query:
+            raise ToolError("query must not contain NUL bytes")
+        if len(query) > 512:
+            raise ToolError(f"query too long: {len(query)} characters (maximum is 512)")
+        if path is not None:
+            resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
+        if ref_a:
+            ref_a = validate_ref(ref_a)
+        if ref_b:
+            ref_b = validate_ref(ref_b)
+        args = git_args("-C", str(root), "log", "--no-decorate")
+        if ref_a and ref_b:
+            args.append(f"{ref_a}..{ref_b}")
+        elif ref_b:
+            args.append(ref_b)
+        args += ["-S", query, "--format=%h%x09%an%x09%cd%x09%s", "--date=short"]
+        if path:
+            args += ["--", path]
+        res = await run_allowed(args, TIMEOUT_SEARCH)
+        if res.returncode != 0:
+            raise ToolError(f"search history failed: {repo}", cause=trim_cause(res.stderr))
+        items = []
+        for line in res.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\t", 3)
+            if len(parts) < 4:
+                continue
+            items.append(
+                {"hash": parts[0], "author": parts[1], "date": parts[2], "subject": parts[3]}
+            )
+        data: dict = {"items": items}
+        if len(items) > self.valves.max_results:
+            data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
+            data["items"] = items[: self.valves.max_results]
+        return json_output(
+            data, self.valves.max_bytes, hint="use path=<file> or ref_a/ref_b to narrow the window, or raise the max_results Valve"
+        )
+
     async def cexp_show_commit(
         self,
         repo: str,

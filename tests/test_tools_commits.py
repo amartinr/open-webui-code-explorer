@@ -311,7 +311,80 @@ class TestListCommits:
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_list_commits("testowner/testrepo", ref_b="--all")
         assert out.startswith("Error:")
+
+    # ------------------------------------------------------------------
+    # cexp_search_history
+    # ------------------------------------------------------------------
+
+    async def test_search_history_finds_introducing_commit(self, repos_path, history_repo):
+        """E7: -S finds the commit that introduced the string; items carry the
+        E4 shape (hash/subject/author/date)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_search_history("testowner/testrepo", "return 2")
+        items = parse_json(out)["items"]
+        assert items, "expected a commit for return 2"
+        assert all(set(i) == {"hash", "subject", "author", "date"} for i in items)
+        assert any(i["subject"] == "fix: return 2" for i in items)
+
+    async def test_search_history_empty_result(self, repos_path, history_repo):
+        """E7: absent string -> empty items, not an error."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_search_history("testowner/testrepo", "zzz_nothing_zzz")
+        result = parse_json(out)
+        assert result["items"] == []
+
+    async def test_search_history_path_narrows(self, repos_path, history_repo):
+        """E7: path= restricts to that file."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_search_history("testowner/testrepo", "return 1", path="util.py")
+        assert parse_json(out)["items"] == []  # return 1 lives in app.py
+        out = await tools.cexp_search_history("testowner/testrepo", "return 1", path="app.py")
+        assert any(i["subject"] == "feat: return 1" for i in parse_json(out)["items"])
+
+    async def test_search_history_range_restricts_window(self, repos_path, history_repo):
+        """E7: ref_a..ref_b limits the window."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_search_history(
+            "testowner/testrepo", "return", ref_a="v1.0.0", ref_b="v1.1.0"
+        )
+        items = parse_json(out)["items"]
+        assert any(i["subject"] == "feat: return 1" for i in items)
+        assert not any(i["subject"] == "fix: return 2" for i in items)  # after v1.1.0
+
+    async def test_search_history_refs_validated(self, repos_path, history_repo):
+        """E7: refs go through validate_ref (revision expressions rejected)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_search_history("testowner/testrepo", "return", ref_b="HEAD~1")
+        assert out.startswith("Error:")
         assert "invalid ref" in out
+
+    async def test_search_history_query_validation(self, repos_path, history_repo):
+        """E7: empty/whitespace/NUL/too-long queries are rejected."""
+        tools = await clone_source(repos_path, history_repo)
+        for bad in ["", "   ", "a\x00b", "x" * 513]:
+            out = await tools.cexp_search_history("testowner/testrepo", bad)
+            assert out.startswith("Error:"), repr(bad)
+
+    async def test_search_history_capped(self, repos_path, git_daemon):
+        """E7: max_results caps the result with truncated metadata. Each
+        commit APPENDS a token line (write_text would replace, keeping the
+        -S count at 1 for every commit)."""
+        src = daemon_source(git_daemon, f"src-hist-{uuid.uuid4().hex[:8]}")
+        src.mkdir(parents=True, exist_ok=True)
+        await run_git(src, "init", "-b", "main")
+        lines = []
+        for i in range(6):
+            lines.append(f"token{i}")
+            (src / "f.txt").write_text("\n".join(lines) + "\n")
+            await run_git(src, "add", "-A")
+            await run_git(src, *IDENT, "commit", "-m", f"add token{i}")
+        tools = await clone_source(repos_path, src)
+        tools.valves.max_results = 3
+        out = await tools.cexp_search_history("testowner/testrepo", "token")
+        result = parse_json(out)
+        assert len(result["items"]) == 3
+        assert result["truncated"]["shown"] == 3
+        assert result["truncated"]["total"] == 6
         out = await tools.cexp_list_commits("testowner/testrepo", ref_a="a..b", ref_b="main")
         assert out.startswith("Error:")
         assert "invalid ref" in out
@@ -515,6 +588,7 @@ class TestOpenWebUILoading:
             "cexp_list_branches",
             "cexp_list_commits",
             "cexp_list_tags",
+            "cexp_search_history",
             "cexp_show_commit",
         ]
         for name in discovered:
