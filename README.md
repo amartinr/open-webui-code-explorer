@@ -19,6 +19,9 @@ Four self-contained scripts (one per Open WebUI Tool), generated from
 - `cexp_read_file` / `cexp_list_files` take a `ref` (branch, tag, or commit):
   read a file, or list the files, as they exist at that version (from the
   local clone, no network, no working-tree changes).
+- `cexp_list_files` is non-recursive by default: it lists the direct entries
+  under `path`; pass `recursive=True` to descend (optionally bounded by
+  `max_depth`, which requires `recursive=True`).
 - `cexp_compare_commits` takes `context` (unified-context lines) and `path`:
   narrow a large diff to a single file.
 

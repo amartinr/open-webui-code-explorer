@@ -15,7 +15,8 @@ allow-listed storage area.
 1. **Scope first.** Always pass `repo`, and a narrow `path` or `filter` when
    possible. Never search the whole storage area unscoped.
 2. **Structure before content.** Use `cexp_list_files` to understand a repo's
-   layout before reading files; use `cexp_list_branches`/`cexp_list_tags` to
+   layout before reading files (it lists the direct entries by default; pass
+   `recursive=True` to descend); use `cexp_list_branches`/`cexp_list_tags` to
    discover refs before pointing a history tool at a name.
 3. **Read minimally.** Use line ranges for large files and targeted
    `cexp_search_text`/`cexp_search_symbol` instead of whole-file reads.

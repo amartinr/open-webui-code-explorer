@@ -1218,6 +1218,7 @@ class Tools:
         self,
         repo: str,
         path: Optional[str] = None,
+        recursive: bool = False,
         max_depth: Optional[int] = None,
         filter: Optional[str] = None,
         type: Optional[str] = "all",
@@ -1227,7 +1228,10 @@ class Tools:
 
         Use to explore repository structure before reading files. Returns a
         JSON object with an items array of {"path", "kind"} entries, relative
-        to the repository root and sorted. Respects .gitignore (via the
+        to the repository root and sorted. By default lists only the direct
+        entries under the path (no recursion): subdirectories appear as
+        entries but are not descended into. Pass recursive=True to descend
+        (optionally bounded by max_depth). Respects .gitignore (via the
         pathspec package when available); hidden files are not shown by
         default. With ref, lists the files present at that branch/tag/commit
         from the local git object store (no working-tree changes, no network);
@@ -1236,13 +1240,14 @@ class Tools:
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param path: Optional subdirectory or file, relative to the repository root; do NOT include the "<owner>/<name>" prefix (that belongs in `repo`); always use "/" as separator (e.g. "src/main.py"); defaults to the repository root.
+        :param recursive: Optional; if True, recurse into subdirectories (default False lists only the direct entries under the path).
         :param ref: Optional git ref (branch, tag, or commit hash) to list files at; None (default) lists the working tree. Only plain refs are accepted; revision expressions like HEAD~1 are rejected.
-        :param max_depth: Optional maximum directory depth (0 = only the given path).
+        :param max_depth: Optional maximum directory depth when recursive=True (0 = only the given path); requires recursive=True.
         :param filter: Optional space-separated glob patterns; a leading "!" excludes (e.g. "*.py !*.md").
         :param type: "file", "dir", or "all" (default "all").
         """
         try:
-            return await self._list_files(repo, path, max_depth, filter, type, ref)
+            return await self._list_files(repo, path, recursive, max_depth, filter, type, ref)
         except Exception as e:
             return error_string(e)
 
@@ -1250,6 +1255,7 @@ class Tools:
         self,
         repo: str,
         path: Optional[str],
+        recursive: bool,
         max_depth: Optional[int],
         filter: Optional[str],
         type: Optional[str],
@@ -1261,7 +1267,7 @@ class Tools:
         if ref is not None:
             # Ref listing reads the tree, not the working tree: the path is
             # validated for traversal safety but need not exist on disk.
-            return await self._list_files_at_ref(root, repo, path, max_depth, filter, type, ref)
+            return await self._list_files_at_ref(root, repo, path, recursive, max_depth, filter, type, ref)
         base = resolve_path(repo, path, repos_path)
         if not base.exists():
             raise ToolError(f"path not found: {path or '.'} in {repo}", kind="not_found")
@@ -1270,6 +1276,12 @@ class Tools:
         if type not in ("file", "dir", "all"):
             raise ToolError(f"type must be 'file', 'dir', or 'all', got {type!r}")
         includes, excludes = parse_filter(filter)
+        if max_depth is not None and not recursive:
+            raise ToolError(
+                "max_depth requires recursive=True (default lists only the direct entries)"
+            )
+        if not recursive:
+            max_depth = 0
 
         if base.is_file():
             rel = str(base.relative_to(root))
@@ -1301,6 +1313,7 @@ class Tools:
         root: Path,
         repo: str,
         path: Optional[str],
+        recursive: bool,
         max_depth: Optional[int],
         filter: Optional[str],
         type: Optional[str],
@@ -1310,9 +1323,9 @@ class Tools:
         `git ls-tree -r --name-only`, without touching the working tree
         (DESIGN.md §12.1). Directories are derived from file paths (git tracks
         no empty directories), so type="dir" reflects implied directories.
-        filter/type/max_depth/max_results apply exactly like the working-tree
-        listing; an unknown ref is an Error naming the ref, a path absent at
-        the ref is a Not found."""
+        recursive/filter/type/max_depth/max_results apply exactly like the
+        working-tree listing (default: direct entries only); an unknown ref is
+        an Error naming the ref, a path absent at the ref is a Not found."""
         ref = validate_ref(ref)
         repos_path = resolve_repos_path(self.valves.repos_path)
         # Traversal-safety validation only; the path need not exist at the ref.
@@ -1322,6 +1335,12 @@ class Tools:
         if type not in ("file", "dir", "all"):
             raise ToolError(f"type must be 'file', 'dir', or 'all', got {type!r}")
         includes, excludes = parse_filter(filter)
+        if max_depth is not None and not recursive:
+            raise ToolError(
+                "max_depth requires recursive=True (default lists only the direct entries)"
+            )
+        if not recursive:
+            max_depth = 0
 
         res = await run_allowed(
             git_args("-C", str(root), "ls-tree", "-r", "--name-only", ref),

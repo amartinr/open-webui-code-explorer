@@ -288,6 +288,8 @@ All tools share these conventions. Implement them consistently.
     validated by `validate_ref` before reaching git.
   - `context` → number of unified-context lines around a diff (maps to
     `git diff -U N`).
+  - `recursive` → descend into subdirectories in `cexp_list_files`; the
+    default (False) lists only the direct entries under the path.
 - **`filter` parameter:** named `filter` for model readability, but its value is a
   **glob pattern** (e.g. `*.py`, `!*.md`). A `filter` string may contain
   space-separated patterns; a leading `!` marks an exclusion. Applied with
@@ -423,7 +425,8 @@ cexp_list_repos()
 cexp_list_files(
   repo:      str                  # required: "<owner>/<name>"
   path:      str                  # optional (default repo root)
-  max_depth: int                  # optional
+  recursive: bool                 # optional, default False
+  max_depth: int                  # optional (requires recursive=True)
   filter:    str                  # optional (glob pattern, e.g. "*.py", "!*.md")
   type:      "file" | "dir" | "all"   # optional
   ref:       str                  # optional: git ref (branch/tag/hash); None = working tree
@@ -432,14 +435,22 @@ cexp_list_files(
 
 - Walks the repo with Python's `os.walk`, honoring `.gitignore` (via
   `pathspec` when available) and skipping `.git`/VCS dirs; returns relative
-  paths (sorted), each with `{"path", "kind"}`, honoring `max_depth` (dirs at
-  the depth limit are listed but not descended), `type`, and `filter` globs.
-  Capped by the `max_results` Valve.
+  paths (sorted), each with `{"path", "kind"}`, honoring `type`, `filter`
+  globs, and `recursive`/`max_depth` (dirs at the depth limit are listed but
+  not descended). Capped by the `max_results` Valve.
+- **Non-recursive by default** (`recursive=False`): only the direct entries
+  under `path` are listed (depth 1); subdirectories appear as entries but are
+  not descended into. This keeps the default listing compact, cheap, and
+  predictable instead of filling the `max_results` cap with an
+  alphabetically-truncated deep tree. `recursive=True` descends (optionally
+  bounded by `max_depth`). `max_depth` without `recursive=True` is an error
+  (explicit is better than implicit for the agent).
 - When `ref` is given, the file list is produced from `git ls-tree -r
   --name-only <ref>` (validated by `validate_ref`) instead of the working tree,
-  and the same `filter`/`type`/`max_depth`/cap logic is applied to the
-  resulting paths in Python. Directories are derived from file paths (git does
-  not track empty directories), so `type="dir"` reflects implied directories.
+  and the same `filter`/`type`/`recursive`/`max_depth`/cap logic is applied to
+  the resulting paths in Python. Directories are derived from file paths (git
+  does not track empty directories), so `type="dir"` reflects implied
+  directories.
 
 #### `cexp_read_file`
 
@@ -1082,6 +1093,16 @@ Decisions made (recorded for the record):
   returns raw `bytes` for the read-at-ref path, which must preserve bytes for
   binary/UTF-8 detection before decoding explicitly as UTF-8.
 
+- **`cexp_list_files` is non-recursive by default** and descends only with an
+  explicit `recursive=True` (Enhancement C). Rationale: the old default
+  (unlimited recursion) filled the `max_results` cap with an
+  alphabetically-truncated deep tree, so a default listing was both expensive
+  and unpredictable. With `recursive` the model makes an explicit, deliberate
+  choice: the default is compact and cheap (direct entries only), deep
+  exploration is opt-in, and `max_depth` (which requires `recursive=True`)
+  bounds the descent. The parameter is a *selector* in the §6 sense, applied
+  identically to the working-tree and `ref` paths.
+
 Still open:
 - [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
 - [ ] Default cap values: propose `max_results=50`, `max_lines=200`,
@@ -1158,7 +1179,6 @@ working-tree mutation for reads.
 
 **Status:** redesigned (was "multi-host directory restructure"); see
 `ENHANCEMENT_B.md` for the full proposal. No hard ordering dependency on A.
-
 The directory layout STAYS `<repos_path>/<owner>/<name>` (two levels): the
 provider/protocol is NOT part of the path. It is metadata already persisted
 by git itself (`remote.origin.url` in `<repo>/.git/config`, written by the
@@ -1175,3 +1195,14 @@ blocked (local exfiltration / command execution). A three-level
 `<host>/<owner>/<name>` layout is explicitly deferred: it would only be
 justified if two same-namespace repos from different providers must coexist
 simultaneously. See `ENHANCEMENT_B.md` for full scope, tests, and order.
+
+### 12.3 Enhancement C — Explicit Recursion Control in `cexp_list_files` (done)
+
+**Status:** implemented; see `ENHANCEMENT_C.md`.
+
+`cexp_list_files` gains `recursive: bool = False`: by default it lists only
+the direct entries under `path` (compact, cheap, predictable); `recursive=True`
+descends (optionally bounded by `max_depth`, which requires `recursive=True`).
+The old default — unlimited recursion — filled the `max_results` cap with an
+alphabetically-truncated deep tree. `recursive` is a selector in the §6
+sense, applied identically to the working-tree and `ref` paths.

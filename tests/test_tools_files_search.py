@@ -114,15 +114,26 @@ class TestListFiles:
 
     async def test_max_depth(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo", max_depth=1))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True, max_depth=1)
+        )
         paths = {i["path"] for i in result["items"]}
         assert "hello.py" in paths
         assert "sub" in paths
         assert "sub/deep.py" not in paths
 
+    async def test_max_depth_requires_recursive(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_list_files("testowner/testrepo", max_depth=1)
+        assert out.startswith("Error:")
+        assert "max_depth" in out
+        assert "recursive" in out
+
     async def test_filter_include_glob(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="*.py"))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True, filter="*.py")
+        )
         paths = [i["path"] for i in result["items"]]
         assert "hello.py" in paths
         assert "sub/deep.py" in paths
@@ -176,6 +187,32 @@ class TestListFiles:
         assert len(result["items"]) == 2
         assert result["truncated"]["total"] >= 2
 
+    async def test_default_lists_direct_entries_only(self, repos_path, source_repo):
+        """The default is non-recursive: only the direct entries under the
+        path are listed; subdirectories appear as entries but are not
+        descended into (Enhancement C, cexp_list_files recursive mode)."""
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
+        by_path = {i["path"]: i["kind"] for i in result["items"]}
+        assert by_path["hello.py"] == "file"
+        assert by_path["sub"] == "dir"  # listed as an entry...
+        assert "sub/deep.py" not in by_path  # ...but not descended into
+
+    async def test_recursive_true_descends(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True)
+        )
+        by_path = {i["path"]: i["kind"] for i in result["items"]}
+        assert by_path["sub/deep.py"] == "file"
+
+    async def test_recursive_at_subpath(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", path="sub", recursive=True)
+        )
+        assert [i["path"] for i in result["items"]] == ["sub/deep.py"]
+
     async def test_nested_gitignore_honored(self, repos_path, source_repo):
         """A .gitignore in a subdirectory applies relative to that subdir,
         like git/fd/ripgrep (DESIGN.md §7 Phase 2)."""
@@ -184,7 +221,9 @@ class TestListFiles:
         (clone / "sub" / ".gitignore").write_text("*.gen\n")
         (clone / "sub" / "a.gen").write_text("sentinel_xyz\n")
 
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True)
+        )
         paths = [i["path"] for i in result["items"]]
         assert "sub/a.gen" not in paths
         assert "sub/deep.py" in paths
@@ -201,7 +240,9 @@ class TestListFiles:
         (clone / "sub" / "a.gen").write_text("gen\n")
         (clone / "sub" / "keep.gen").write_text("keep\n")
 
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo"))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True)
+        )
         paths = [i["path"] for i in result["items"]]
         assert "sub/a.gen" not in paths
         assert "sub/keep.gen" in paths
@@ -229,7 +270,9 @@ class TestListFilesAtRef:
 
     async def test_lists_tree_at_ref(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True, ref="main")
+        )
         by_path = {i["path"]: i["kind"] for i in result["items"]}
         assert by_path["hello.py"] == "file"
         assert by_path["world.md"] == "file"
@@ -238,6 +281,13 @@ class TestListFilesAtRef:
         assert by_path["data.bin"] == "file"
         assert by_path["big.txt"] == "file"
         assert "truncated" not in result
+
+    async def test_default_non_recursive_at_ref(self, repos_path, source_repo):
+        tools = await clone_source(repos_path, source_repo)
+        result = parse_json(await tools.cexp_list_files("testowner/testrepo", ref="main"))
+        by_path = {i["path"]: i["kind"] for i in result["items"]}
+        assert by_path["sub"] == "dir"
+        assert "sub/deep.py" not in by_path
 
     async def test_list_at_older_ref_excludes_newer_files(self, repos_path, source_repo):
         """Tag the current state, then advance with a new file: the ref read
@@ -265,7 +315,9 @@ class TestListFilesAtRef:
 
     async def test_filter_at_ref(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo", filter="*.py", ref="main"))
+        result = parse_json(
+            await tools.cexp_list_files("testowner/testrepo", recursive=True, filter="*.py", ref="main")
+        )
         paths = [i["path"] for i in result["items"]]
         assert "hello.py" in paths
         assert "sub/deep.py" in paths
@@ -280,7 +332,11 @@ class TestListFilesAtRef:
 
     async def test_max_depth_at_ref(self, repos_path, source_repo):
         tools = await clone_source(repos_path, source_repo)
-        result = parse_json(await tools.cexp_list_files("testowner/testrepo", max_depth=1, ref="main"))
+        result = parse_json(
+            await tools.cexp_list_files(
+                "testowner/testrepo", recursive=True, max_depth=1, ref="main"
+            )
+        )
         paths = {i["path"] for i in result["items"]}
         assert "hello.py" in paths
         assert "sub" in paths
