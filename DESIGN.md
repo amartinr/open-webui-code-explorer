@@ -370,6 +370,11 @@ cexp_fetch_repo(
 - Requires the repo to already exist.
 - Run `git fetch --all --tags --prune`.
 - Return list of updated branches/tags, or a notice if up to date.
+- Reports `release`: the most recent release tag (same resolution as
+  `cexp_clone_repo(ref="release")`), so the model knows which tag to point
+  `cexp_read_file`/`cexp_compare_commits` at after a fetch. Does NOT accept a
+  `ref` parameter: `--tags` already materializes every tag, so resolving the
+  release is a report, not a fetch-mode.
 - Does NOT touch the working tree. This is the only way to bring in newly
   published tags while the checkout is on a detached HEAD (e.g. cloned at a
   specific tag) or on a branch you do not want to move.
@@ -543,8 +548,12 @@ cexp_list_tags(
 )
 ```
 
-- Runs `git tag -l --sort=-creatordate` (newest first), so the most recent
-  tags appear before the `max_results` cap bites.
+- Runs `git tag -l` and orders in Python: semver tags (v?X.Y.Z) newest-first
+  by `_release_sort_key` (pure releases before prereleases), then non-semver
+  tags by commit date. The first item is exactly what
+  `cexp_clone_repo(ref="release")` and `cexp_fetch_repo`'s `release` resolve
+  to. (git's `--sort=-version:refname` is NOT used: it orders prerelease
+  suffixes above the pure release, contradicting the other tools.)
 - Use to see which release tags exist before `cexp_clone_repo(ref="release")`,
   `cexp_compare_commits`, or `cexp_show_commit` on a tag.
 - Capped by the `max_results` Valve.
@@ -1005,9 +1014,24 @@ Decisions made (recorded for the record):
 - `cexp_list_branches` normalizes `git branch -a` output: remote-tracking refs are
   shown as `origin/<name>` (stripping the `remotes/` prefix) and the detached
   HEAD pseudo-entry `(HEAD detached at ...)` is skipped.
-- `cexp_list_tags` uses `--sort=-version:refname` (semver-aware, newest first)
-  instead of `--sort=-creatordate`: the latter is unreliable when tags share
-  a timestamp and leaves ties in alphabetical order.
+- `cexp_list_tags` orders semver tags (v?X.Y.Z) newest-first by
+  `_release_sort_key` (pure releases before prereleases) and non-semver tags
+  by commit date - so its first item is exactly what
+  `cexp_clone_repo(ref="release")` and `cexp_fetch_repo`'s `release` field
+  resolve to. It deliberately does NOT use `git tag --sort=-version:refname`:
+  git's version sort treats a prerelease suffix (-rcX) as an EXTRA component
+  and orders it ABOVE the pure release (v2.0.0-rc2 > v2.0.0), which would
+  tell the model a prerelease is the newest release and contradict the other
+  two tools.
+- `cexp_fetch_repo` reports `release` (the most recent release tag, same
+  resolution as `cexp_clone_repo(ref="release")`) in its JSON result, so the
+  model knows which tag to point `cexp_read_file`/`cexp_compare_commits` at
+  after a fetch - and can choose to re-clone at `ref="release"` if it wants
+  the working tree at that tag. It deliberately does NOT accept a `ref`
+  parameter: `fetch --tags` already materializes every tag (including
+  releases), so resolving "which is the release" is a report, not a
+  fetch-mode; `cexp_pull_repo` covers updating a branch, and
+  `cexp_clone_repo(ref="release")` covers checking out the release.
 - `cexp_show_commit` runs `git show <commit>` (full diff, matching §7), not
   `--stat`; the diff is capped by `max_lines`/`max_bytes`. `cexp_compare_commits`
   uses the three-dot `ref_a...ref_b` diff by default and `--stat` when
@@ -1051,8 +1075,10 @@ Decisions made (recorded for the record):
 - `cexp_list_branches` and `cexp_list_tags` were added to Phase 3 (Commits script): the
   model must be able to discover the named refs before pointing
   `cexp_list_commits`/`cexp_show_commit`/`cexp_compare_commits` or `cexp_clone_repo(ref=...)` at
-  them. `cexp_list_tags` sorts newest-first by version (`--sort=-version:refname`)
-  so the `max_results` cap shows the most recent releases first.
+  them. `cexp_list_tags` sorts newest-first (semver via `_release_sort_key`, so
+  pure releases before prereleases) so the `max_results` cap shows the most
+  recent releases first, matching `cexp_clone_repo(ref="release")`/
+  `cexp_fetch_repo`'s `release`.
 - `cexp_clone_repo` derives the default remote as `https://github.com/<owner>/<name>.git`
   when `url` is omitted; `url` overrides the remote, never the target directory
   (which always comes from the validated `repo`).
@@ -1104,11 +1130,8 @@ Decisions made (recorded for the record):
   identically to the working-tree and `ref` paths.
 
 Still open:
-- [ ] Exact symbol-search strategy (regex set vs. tree-sitter vs. ctags).
 - [ ] Default cap values: propose `max_results=50`, `max_lines=200`,
       `max_bytes=20480`; adjust after real-world testing.
-- [ ] Whether `cexp_fetch_repo` should also resolve `ref="release"` (currently only
-      `cexp_clone_repo` does).
 
 ---
 

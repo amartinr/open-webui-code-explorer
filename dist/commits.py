@@ -973,16 +973,31 @@ class Tools:
     async def _list_tags(self, repo: str) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        # Newest-first by version (semver-aware). --sort=-creatordate is
-        # unreliable when tags share a timestamp, and would leave ties in
-        # arbitrary/alphabetical order.
-        res = await run_allowed(
-            git_args("-C", str(root), "tag", "-l", "--sort=-version:refname"),
-            TIMEOUT_SEARCH,
-        )
+        # Newest-first, matching cexp_clone_repo's release resolution exactly:
+        # semver tags (v?X.Y.Z) ordered by _release_sort_key (pure releases
+        # before prereleases) first, then non-semver tags by commit date. This
+        # deliberately does NOT use `git tag --sort=-version:refname`: git's
+        # version sort treats a prerelease suffix (-rcX) as an EXTRA component
+        # and orders it ABOVE the pure release (v2.0.0-rc2 > v2.0.0), so the
+        # model would be told a prerelease is the newest release - contradicting
+        # cexp_clone_repo(ref="release"), which resolves the pure release.
+        res = await run_allowed(git_args("-C", str(root), "tag", "-l"), TIMEOUT_SEARCH)
         if res.returncode != 0:
             raise ToolError(f"list tags failed: {repo}", cause=trim_cause(res.stderr))
         tags = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+        semver_tags = sorted(
+            (t for t in tags if _RELEASE_TAG_RE.match(t)),
+            key=_release_sort_key,
+            reverse=True,
+        )
+        nonsemver_tags = [t for t in tags if not _RELEASE_TAG_RE.match(t)]
+        res = await run_allowed(
+            git_args("-C", str(root), "tag", "--sort=-creatordate"), TIMEOUT_SEARCH
+        )
+        if res.returncode == 0:
+            newest_first = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+            nonsemver_tags = [t for t in newest_first if t in nonsemver_tags]
+        tags = semver_tags + nonsemver_tags
         data: dict = {"items": tags}
         if len(tags) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(tags)}

@@ -105,6 +105,8 @@ permission comes from the mounted volume.
 
 - `cexp_list_repos` reports each clone's `repo`, current `branch`, and
   `origin` (the clone URL, showing provider + protocol).
+- `cexp_fetch_repo` reports `release`: the most recent release tag, same
+  resolution as `cexp_clone_repo(ref="release")`.
 - Structured results are JSON (indented, UTF-8, always valid): the
   clone/fetch/pull/list/search/commit-enumeration tools, with a structured
   `truncated` field when capped. `cexp_read_file` and the diff tools return
@@ -114,5 +116,7 @@ permission comes from the mounted volume.
 - Timeouts: clone 600 s, fetch/pull 120 s, misc 30 s.
 - `cexp_clone_repo(ref="release")` checks out the most recent release tag
   (highest `v?X.Y.Z` semver; fallback: newest tag by commit date).
+  `cexp_fetch_repo` reports that same tag in its `release` field after
+  fetching.
 - `cexp_pull_repo` is fast-forward only (`git pull --ff-only`): no merge
   commits; fails cleanly on a detached HEAD (use `cexp_fetch_repo`).

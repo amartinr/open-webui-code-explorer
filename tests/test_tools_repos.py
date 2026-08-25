@@ -306,6 +306,9 @@ class TestFetchRepo:
         result = parse_json(out)
         assert result["repo"] == "o/r"
         assert result["up_to_date"] is False
+        # After the fetch, the newest release is reported (same resolution as
+        # cexp_clone_repo(ref="release")).
+        assert result["release"] == "v2.0.0"
         by_ref = {item["ref"]: item for item in result["items"]}
         assert by_ref["v2.0.0"]["change"] == "new"
         assert by_ref["origin/main"]["change"] == "updated"
@@ -325,6 +328,8 @@ class TestFetchRepo:
         result = parse_json(out)
         assert result["up_to_date"] is True
         assert result["items"] == []
+        # release is still reported even when nothing changed.
+        assert result["release"] == "v1.1.0"
 
     async def test_fetch_not_cloned(self, repos_path):
         tools = make_tools(repos_path)

@@ -32,7 +32,8 @@ allow-listed storage area.
    (`cexp_list_commits`/`cexp_show_commit`/`cexp_compare_commits` across
    refs). The working tree is the default state, but a clone may be checked
    out at a tag: when the question names a version, state it explicitly with
-   `ref`.
+   `ref`. After a fetch, use the reported `release` to know which tag to read
+   or compare at.
 5. **Truncated means incomplete.** A `truncated` field or trailing marker says
    the output was cut: narrow the scope and retry, do not assume completeness.
 6. **Errors are data.** Tools return `Error:`/`Not found:`/`Timed out:`

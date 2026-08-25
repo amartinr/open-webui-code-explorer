@@ -193,8 +193,11 @@ class Tools:
 
         Use to bring newly published branches/tags into an existing clone
         without touching the working tree (safe on a detached HEAD). Does not
-        merge or move any local branch. Returns a JSON object with repo,
-        up_to_date, and items (refs with their change).
+        merge or move any local branch. Reports the most recent release tag
+        (same resolution as cexp_clone_repo ref="release") so you know which
+        tag to point cexp_read_file/cexp_compare_commits at without running
+        cexp_list_tags. Returns a JSON object with repo, up_to_date, items
+        (refs with their change), and release.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         """
@@ -217,16 +220,23 @@ class Tools:
 
         added = sorted(set(after) - set(before))
         updated = sorted(r for r in before if r in after and before[r] != after[r])
+        release = await self._resolve_release_tag(str(root))
         if not added and not updated:
             return json_output(
-                {"repo": repo, "up_to_date": True, "items": []}, self.valves.max_bytes
+                {"repo": repo, "up_to_date": True, "items": [], "release": release},
+                self.valves.max_bytes,
             )
         items = [{"ref": r, "change": "new"} for r in added]
         items += [
             {"ref": r, "change": "updated", "from": before[r][:7], "to": after[r][:7]}
             for r in updated
         ]
-        data: dict = {"repo": repo, "up_to_date": False, "items": items}
+        data: dict = {
+            "repo": repo,
+            "up_to_date": False,
+            "items": items,
+            "release": release,
+        }
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]

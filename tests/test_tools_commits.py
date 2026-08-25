@@ -140,6 +140,30 @@ class TestListTags:
         result = parse_json(out)
         assert result["items"] == ["v1.1.0", "v1.0.0"]
 
+    async def test_prerelease_sorts_below_release(self, repos_path, git_daemon):
+        """A prerelease tag (v2.0.0-rc2) must sort BELOW the pure release
+        (v2.0.0), matching cexp_clone_repo(ref="release") and
+        cexp_fetch_repo's reported release - unlike git's
+        --sort=-version:refname, which treats -rcX as an extra component and
+        would put the prerelease first (DESIGN.md §10)."""
+        src = daemon_source(git_daemon, f"src-rc-{uuid.uuid4().hex[:8]}")
+        src.mkdir()
+        res = await run_git(src, "init", "-b", "main")
+        assert res.returncode == 0
+        await commit_file(src, "a.txt", "a\n", "init")
+        await run_git(src, "tag", "v2.0.0-rc2")
+        await run_git(src, "tag", "v2.0.0")
+        await run_git(src, "tag", "v1.0.0")
+        tools = await clone_source(repos_path, src)
+
+        out = await tools.cexp_list_tags("testowner/testrepo")
+        assert parse_json(out)["items"] == ["v2.0.0", "v2.0.0-rc2", "v1.0.0"]
+        # fetch reports the same resolution (Repos script).
+        repos_tools = ReposTools()
+        repos_tools.valves.repos_path = str(repos_path)
+        result = parse_json(await repos_tools.cexp_fetch_repo("testowner/testrepo"))
+        assert result["release"] == "v2.0.0"
+
     async def test_no_tags(self, repos_path, git_daemon):
         src = daemon_source(git_daemon, f"src-notags-{uuid.uuid4().hex[:8]}")
         src.mkdir()

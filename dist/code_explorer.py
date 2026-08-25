@@ -1048,8 +1048,11 @@ class Tools:
 
         Use to bring newly published branches/tags into an existing clone
         without touching the working tree (safe on a detached HEAD). Does not
-        merge or move any local branch. Returns a JSON object with repo,
-        up_to_date, and items (refs with their change).
+        merge or move any local branch. Reports the most recent release tag
+        (same resolution as cexp_clone_repo ref="release") so you know which
+        tag to point cexp_read_file/cexp_compare_commits at without running
+        cexp_list_tags. Returns a JSON object with repo, up_to_date, items
+        (refs with their change), and release.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         """
@@ -1072,16 +1075,23 @@ class Tools:
 
         added = sorted(set(after) - set(before))
         updated = sorted(r for r in before if r in after and before[r] != after[r])
+        release = await self._resolve_release_tag(str(root))
         if not added and not updated:
             return json_output(
-                {"repo": repo, "up_to_date": True, "items": []}, self.valves.max_bytes
+                {"repo": repo, "up_to_date": True, "items": [], "release": release},
+                self.valves.max_bytes,
             )
         items = [{"ref": r, "change": "new"} for r in added]
         items += [
             {"ref": r, "change": "updated", "from": before[r][:7], "to": after[r][:7]}
             for r in updated
         ]
-        data: dict = {"repo": repo, "up_to_date": False, "items": items}
+        data: dict = {
+            "repo": repo,
+            "up_to_date": False,
+            "items": items,
+            "release": release,
+        }
         if len(items) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(items)}
             data["items"] = items[: self.valves.max_results]
@@ -1902,16 +1912,31 @@ class Tools:
     async def _list_tags(self, repo: str) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
-        # Newest-first by version (semver-aware). --sort=-creatordate is
-        # unreliable when tags share a timestamp, and would leave ties in
-        # arbitrary/alphabetical order.
-        res = await run_allowed(
-            git_args("-C", str(root), "tag", "-l", "--sort=-version:refname"),
-            TIMEOUT_SEARCH,
-        )
+        # Newest-first, matching cexp_clone_repo's release resolution exactly:
+        # semver tags (v?X.Y.Z) ordered by _release_sort_key (pure releases
+        # before prereleases) first, then non-semver tags by commit date. This
+        # deliberately does NOT use `git tag --sort=-version:refname`: git's
+        # version sort treats a prerelease suffix (-rcX) as an EXTRA component
+        # and orders it ABOVE the pure release (v2.0.0-rc2 > v2.0.0), so the
+        # model would be told a prerelease is the newest release - contradicting
+        # cexp_clone_repo(ref="release"), which resolves the pure release.
+        res = await run_allowed(git_args("-C", str(root), "tag", "-l"), TIMEOUT_SEARCH)
         if res.returncode != 0:
             raise ToolError(f"list tags failed: {repo}", cause=trim_cause(res.stderr))
         tags = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+        semver_tags = sorted(
+            (t for t in tags if _RELEASE_TAG_RE.match(t)),
+            key=_release_sort_key,
+            reverse=True,
+        )
+        nonsemver_tags = [t for t in tags if not _RELEASE_TAG_RE.match(t)]
+        res = await run_allowed(
+            git_args("-C", str(root), "tag", "--sort=-creatordate"), TIMEOUT_SEARCH
+        )
+        if res.returncode == 0:
+            newest_first = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+            nonsemver_tags = [t for t in newest_first if t in nonsemver_tags]
+        tags = semver_tags + nonsemver_tags
         data: dict = {"items": tags}
         if len(tags) > self.valves.max_results:
             data["truncated"] = {"shown": self.valves.max_results, "total": len(tags)}
