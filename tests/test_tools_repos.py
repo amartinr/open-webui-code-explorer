@@ -548,6 +548,22 @@ class TestListRepos:
         assert by_repo["owner1/repo1"] == "main"
         assert by_repo["owner2/repo2"] == "main"
 
+    async def test_list_repos_reports_size(self, repos_path, source_repo):
+        """E10: each item gains a size (bytes on disk), and the other fields
+        are unchanged."""
+        tools = make_tools(repos_path)
+        await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        out = await tools.cexp_list_repos()
+        result = parse_json(out)
+        assert len(result["items"]) == 1
+        item = result["items"][0]
+        assert set(item) == {"repo", "branch", "origin", "size"}
+        assert item["repo"] == "o/r"
+        assert item["branch"] == "main"
+        assert item["origin"] == src_url(source_repo)
+        assert isinstance(item["size"], int)
+        assert item["size"] > 0
+
     async def test_detached_clone_shows_commit(self, repos_path, source_repo):
         tools = make_tools(repos_path)
         await tools.cexp_clone_repo("o/r", url=src_url(source_repo), ref="v1.0.0")

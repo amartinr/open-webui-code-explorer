@@ -341,13 +341,13 @@ class Tools:
     async def cexp_list_repos(self) -> str:
         """List all cloned repositories under the storage area.
 
-        Use to see what is already cloned (owner/name, current branch, and
-        the origin URL each clone was made from, which shows the provider and
-        protocol) before deciding whether to clone, fetch, or pull. Returns a
-        JSON object with an items array of {"repo", "branch", "origin"}
-        entries. No parameters.
+        Use to see what is already cloned (owner/name, current branch, the
+        origin URL each clone was made from, and its on-disk size in bytes)
+        before deciding whether to clone, fetch, pull, or remove. Returns a
+        JSON object with an items array of {"repo", "branch", "origin",
+        "size"} entries. No parameters.
 
-        :return: a JSON object with an `items` array of {"repo", "branch", "origin"} entries, sorted.
+        :return: a JSON object with an `items` array of {"repo", "branch", "origin", "size"} entries, sorted.
         """
         try:
             return await self._list_repos()
@@ -372,6 +372,7 @@ class Tools:
                         "repo": f"{owner_dir.name}/{repo_dir.name}",
                         "branch": await self._current_branch(str(repo_dir)),
                         "origin": await _remote_origin(str(repo_dir)),
+                        "size": await self._dir_size(repo_dir),
                     }
                 )
         if not entries:
@@ -428,17 +429,7 @@ class Tools:
         if root.is_symlink():
             raise ToolError(f"refusing to remove symlinked root: {root}")
 
-        def _dir_size(p: Path) -> int:
-            total = 0
-            for dp, _, files in os.walk(p):
-                for f in files:
-                    try:
-                        total += (Path(dp) / f).stat().st_size
-                    except OSError:
-                        pass
-            return total
-
-        size = await asyncio.to_thread(_dir_size, root)
+        size = await self._dir_size(root)
         if dry_run:
             return json_output(
                 {"repo": repo, "path": str(root), "dry_run": True, "size": size, "removed": False},
@@ -449,6 +440,20 @@ class Tools:
             {"repo": repo, "path": str(root), "dry_run": False, "size": size, "removed": True},
             self.valves.max_bytes,
         )
+
+    async def _dir_size(self, root: Path) -> int:
+        """Total on-disk size in bytes of a clone (Python walk, offloaded)."""
+        def _walk(p: Path) -> int:
+            total = 0
+            for dp, _, files in os.walk(p):
+                for f in files:
+                    try:
+                        total += (Path(dp) / f).stat().st_size
+                    except OSError:
+                        pass
+            return total
+
+        return await asyncio.to_thread(_walk, root)
 
     # ------------------------------------------------------------------
     # shared internals
