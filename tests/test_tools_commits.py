@@ -209,6 +209,60 @@ class TestListCommits:
         subjects = [i["subject"] for i in result["items"]]
         assert subjects == ["add util"]
 
+    async def _merge_repo(self, git_daemon) -> DaemonSource:
+        """A repo with a real merge: main: init -> (feature branch commit) ->
+        merge --no-ff. The feature commit is reachable only via the merged
+        branch, so --first-parent must omit it."""
+        src = daemon_source(git_daemon, f"src-merge-{uuid.uuid4().hex[:8]}")
+        src.mkdir(parents=True, exist_ok=True)
+        await run_git(src, "init", "-b", "main")
+        await commit_file(src, "base.txt", "base\n", "init")
+        await run_git(src, "checkout", "-b", "feature")
+        await commit_file(src, "feature.txt", "feat\n", "feature work")
+        await run_git(src, "checkout", "main")
+        res = await run_git(
+            src, *IDENT, "merge", "--no-ff", "-m", "merge feature", "feature"
+        )
+        assert res.returncode == 0, res.stderr
+        return src
+
+    async def test_first_parent_omits_side_branch_commits(self, repos_path, git_daemon):
+        """E2: with a merge commit, first_parent=True keeps the merge and the
+        main-line commits but hides the feature commit (reachable only via the
+        merged branch); the default keeps everything."""
+        src = await self._merge_repo(git_daemon)
+        tools = await clone_source(repos_path, src)
+
+        out = await tools.cexp_list_commits("testowner/testrepo")
+        subjects = {i["subject"] for i in parse_json(out)["items"]}
+        assert subjects == {"merge feature", "feature work", "init"}
+
+        out = await tools.cexp_list_commits("testowner/testrepo", first_parent=True)
+        subjects = {i["subject"] for i in parse_json(out)["items"]}
+        assert subjects == {"merge feature", "init"}
+
+    async def test_first_parent_composes_with_range_and_path(self, repos_path, git_daemon):
+        """E2: first_parent must not break ref_a..ref_b ranges or path=."""
+        src = await self._merge_repo(git_daemon)
+        tools = await clone_source(repos_path, src)
+
+        # Range: init..main with first_parent still works and is a subset.
+        init_hash = (await run_git(src, "rev-parse", "HEAD~1")).stdout.strip()
+        out = await tools.cexp_list_commits(
+            "testowner/testrepo", ref_a=init_hash, ref_b="main", first_parent=True
+        )
+        result = parse_json(out)
+        assert "merge feature" in [i["subject"] for i in result["items"]]
+
+        # path= with first_parent: git follows ONLY the first-parent line, so
+        # the feature commit (second parent) is not walked; the merge is where
+        # feature.txt entered the mainline, so it is the (single) result.
+        out = await tools.cexp_list_commits(
+            "testowner/testrepo", path="feature.txt", first_parent=True
+        )
+        result = parse_json(out)
+        assert [i["subject"] for i in result["items"]] == ["merge feature"]
+
     async def test_bad_ref_fails_cleanly(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_list_commits("testowner/testrepo", ref_b="nonexistent-ref")

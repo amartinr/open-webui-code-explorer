@@ -20,7 +20,7 @@
 | 2 | S2: purge hostile `GIT_*` from subprocess env (common.py + tests) | ✅ |
 | 3 | S3: `allowed_hosts` Valve on the Repos script (common.py + template + Valves contract + tests) | ✅ |
 | 4 | E1: `cexp_show_commit` + `stat` (template + tests) | ✅ |
-| 5 | E2: `cexp_list_commits` + `first_parent` (template + tests) | ☐ |
+| 5 | E2: `cexp_list_commits` + `first_parent` (template + tests) | ✅ |
 | 6 | E3: `cexp_search_text` + `files_only`/`count_only` (template + tests) | ☐ |
 | 7 | E4: `author`/`date` fields in `cexp_list_commits` (template + tests) | ☐ |
 | 8 | E5: truncation hint (common.py + all tools + tests) | ☐ |

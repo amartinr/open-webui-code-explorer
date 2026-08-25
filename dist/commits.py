@@ -1048,6 +1048,7 @@ class Tools:
         ref_a: Optional[str] = None,
         ref_b: Optional[str] = None,
         path: Optional[str] = None,
+        first_parent: bool = False,
     ) -> str:
         """List commits, optionally between two refs, optionally for a path.
 
@@ -1063,9 +1064,10 @@ class Tools:
         :param ref_a: Optional start ref (branch, tag, or commit).
         :param ref_b: Optional end ref (branch, tag, or commit).
         :param path: Optional path to narrow the history to.
+        :param first_parent: Optional; if True, follow only the first parent (the merge narrative), hiding commits reachable only via merged side branches.
         """
         try:
-            return await self._list_commits(repo, ref_a, ref_b, path)
+            return await self._list_commits(repo, ref_a, ref_b, path, first_parent)
         except Exception as e:
             return error_string(e)
 
@@ -1075,6 +1077,7 @@ class Tools:
         ref_a: Optional[str],
         ref_b: Optional[str],
         path: Optional[str],
+        first_parent: bool,
     ) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
@@ -1085,6 +1088,8 @@ class Tools:
         if ref_b:
             ref_b = validate_ref(ref_b)
         args = git_args("-C", str(root), "log", "--oneline", "--no-decorate")
+        if first_parent:
+            args.append("--first-parent")
         if ref_a and ref_b:
             args.append(f"{ref_a}..{ref_b}")
         elif ref_b:
