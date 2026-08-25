@@ -245,6 +245,39 @@ class TestShowCommit:
         assert "app.py" in out
         assert "def main():" in out
 
+    async def test_stat_returns_summary_without_diff_body(self, repos_path, history_repo):
+        """E1: stat=True shows commit metadata + file summary, never the diff
+        body (the function source must not appear)."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_show_commit("testowner/testrepo", "v1.0.0", stat=True)
+        assert "add app" in out  # subject is present
+        assert "app.py" in out  # changed-file list is present
+        assert "def main():" not in out  # no diff body
+
+    async def test_stat_composes_with_path(self, repos_path, history_repo):
+        """E1: path= narrows the stat summary to that file."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_show_commit(
+            "testowner/testrepo", "main", path="app.py", stat=True
+        )
+        assert "app.py" in out
+        assert "util.py" not in out
+
+    async def test_stat_respects_byte_cap(self, repos_path, history_repo):
+        """E1: stat output is still capped; the marker appears when capped."""
+        tools = await clone_source(repos_path, history_repo)
+        tools.valves.max_bytes = 100
+        out = await tools.cexp_show_commit("testowner/testrepo", "v1.0.0", stat=True)
+        assert len(out.encode("utf-8")) <= 100
+        assert "truncated" in out
+
+    async def test_stat_invalid_commit_errors(self, repos_path, history_repo):
+        """E1: invalid commit still errors with stat=True."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_show_commit("testowner/testrepo", "deadbeef", stat=True)
+        assert out.startswith("Error:")
+        assert "cause:" in out
+
     async def test_show_by_branch_and_path(self, repos_path, history_repo):
         tools = await clone_source(repos_path, history_repo)
         out = await tools.cexp_show_commit("testowner/testrepo", "main", path="app.py")

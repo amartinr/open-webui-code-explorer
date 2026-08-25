@@ -221,31 +221,38 @@ class Tools:
         repo: str,
         commit: str,
         path: Optional[str] = None,
+        stat: bool = False,
     ) -> str:
         """Show a single commit (metadata + diff).
 
         Use to inspect what a specific commit changed. Returns raw git show
         output (commit message, author, date, and the diff), capped by the
-        max_lines/max_bytes Valves with a truncation marker. Only plain
-        branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
-        rejected.
+        max_lines/max_bytes Valves with a truncation marker. With stat=True,
+        returns the commit metadata and the changed-file summary only (no
+        diff body), which is cheaper for "what did this commit touch". Only
+        plain branch/tag/commit refs are accepted; revision expressions
+        (HEAD~1) are rejected.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param commit: Commit hash or ref (branch, tag) to show (required).
         :param path: Optional path to narrow the shown diff to.
+        :param stat: Optional; if True, return the metadata + changed-file summary only, no diff body.
         """
         try:
-            return await self._show_commit(repo, commit, path)
+            return await self._show_commit(repo, commit, path, stat)
         except Exception as e:
             return error_string(e)
 
-    async def _show_commit(self, repo: str, commit: str, path: Optional[str]) -> str:
+    async def _show_commit(self, repo: str, commit: str, path: Optional[str], stat: bool) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
         commit = validate_ref(commit)
         if path is not None:
             resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
-        args = git_args("-C", str(root), "show", commit)
+        args = git_args("-C", str(root), "show")
+        if stat:
+            args += ["--stat", "--format=fuller"]
+        args.append(commit)
         if path:
             args += ["--", path]
         res = await run_allowed(args, TIMEOUT_SEARCH)
