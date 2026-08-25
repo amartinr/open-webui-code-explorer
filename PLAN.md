@@ -29,7 +29,7 @@ then control returns to the user.
 |---|---|---|
 | 1 | S4: cancel-safe `run_allowed` (async spawn, kill helper, timeout + `CancelledError` re-raise) in `common.py` + unit tests | ✅ |
 | 2 | `_clone_repo`: partial-clone cleanup on cancellation (clone + post-clone checkout) + integration tests | ✅ |
-| 3 | Docs: `DESIGN.md` §5.6 (`run_allowed`) and §9.4 (backstop is now cancellation-kill, not only timeout) | ☐ |
+| 3 | Docs: `DESIGN.md` §5.6 (`run_allowed`) and §9.4 (backstop is now cancellation-kill, not only timeout) | ✅ |
 | 4 | Regenerate `dist/`, full suite (existing timeout/headless/text-bytes tests stay green), final checks, commit + push | ☐ |
 
 ---

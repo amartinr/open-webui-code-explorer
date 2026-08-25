@@ -218,12 +218,19 @@ def resolve_path(repo: str, path: str | None, repos_path: str) -> Path
 # root (symlink escape). None → repo root.
 
 async def run_allowed(argv: list[str], timeout: int) -> CommandResult
-# await asyncio.to_thread(subprocess.run, argv, shell=False, capture_output=True,
-#   text=True, timeout=timeout, env=<headless env, §9.7>). Offload to a worker
-#   thread so the blocking call does not stall Open WebUI's event loop (backend
-#   is fully async since 0.9.0). argv[0] MUST be one of the allow-listed binaries
-#   {"git"}. Returns CommandResult(stdout, stderr, returncode) so
-#   tools capture BOTH pipes as data. TimeoutExpired → ToolError("timed out after Ns").
+# await asyncio.create_subprocess_exec(*argv, stdin=PIPE, stdout=PIPE,
+#   stderr=PIPE, env=<headless env, §9.7>) then await asyncio.wait_for(
+#   proc.communicate(input=...), timeout). Spawns the REAL process and awaits
+# it, so both the timeout and a task cancellation (Open WebUI Stop button)
+# act on the child directly (S4): on timeout the process is killed via a
+# staged helper (terminate → 1 s grace → kill → reap, no zombies) and
+# ToolError("timed out after Ns") is returned; on CancelledError the process
+# is killed the same way and the exception is re-raised (it is BaseException
+# and must never be swallowed). argv[0] MUST be one of the allow-listed
+# binaries {"git"}. Returns CommandResult(stdout, stderr, returncode) so
+# tools capture BOTH pipes as data; text=True decodes (locale), text=False
+# returns raw bytes, and the optional input kwarg feeds stdin (git cat-file
+# --batch).
 
 def validate_ref(ref: str) -> str
 # Validate a git ref (branch, tag, or commit hash) before it is interpolated
@@ -880,6 +887,14 @@ cause: <optional, concise extracted reason (e.g. trimmed git stderr, exit code)>
 
 On timeout, return `Error: timed out after Ns`. These are implementation defaults;
 they may be exposed later as admin Valves if needed.
+
+**Backstop (S4).** The timeout is no longer the only guard: `run_allowed`
+spawns the real process and awaits it, so a task cancellation (Open WebUI
+Stop button → `CancelledError`) also kills the child via the staged kill
+helper (terminate → 1 s grace → kill → reap) and re-raises — a cancelled
+operation never leaves git running in the background. `_clone_repo` runs the
+partial-clone cleanup on cancellation too, so a cancelled clone does not
+block the `<owner>/<name>` namespace.
 
 ### 9.5 Deployment (per script)
 
