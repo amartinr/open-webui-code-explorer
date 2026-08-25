@@ -1891,6 +1891,7 @@ class Tools:
         ref_b: str,
         path: Optional[str] = None,
         stat: bool = False,
+        context: Optional[int] = None,
     ) -> str:
         """Compare changes between two refs (three-dot diff by default).
 
@@ -1900,16 +1901,19 @@ class Tools:
         instead of the full diff. Returns raw git diff output, capped by the
         max_lines/max_bytes Valves with a truncation marker. Only plain
         branch/tag/commit refs are accepted; revision expressions (HEAD~1) are
-        rejected.
+        rejected. When a whole-tree diff truncates, narrow it to a single file
+        with `path` (and optionally `context` for more/less surrounding lines)
+        and read either side at its ref with cexp_read_file(ref=...).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param ref_a: First ref (branch, tag, or commit) (required).
         :param ref_b: Second ref (branch, tag, or commit) (required).
         :param path: Optional path to narrow the diff to.
         :param stat: Optional; if True, return the --stat summary only.
+        :param context: Optional number of unified-context lines around the diff; defaults to git's own (3).
         """
         try:
-            return await self._compare_commits(repo, ref_a, ref_b, path, stat)
+            return await self._compare_commits(repo, ref_a, ref_b, path, stat, context)
         except Exception as e:
             return error_string(e)
 
@@ -1920,14 +1924,19 @@ class Tools:
         ref_b: str,
         path: Optional[str],
         stat: bool,
+        context: Optional[int],
     ) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
         ref_a = validate_ref(ref_a)
         ref_b = validate_ref(ref_b)
+        if context is not None and context < 0:
+            raise ToolError(f"context must be >= 0, got {context}")
         if path is not None:
             resolve_path(repo, path, resolve_repos_path(self.valves.repos_path))
         args = git_args("-C", str(root), "diff")
+        if context is not None:
+            args.append(f"-U{context}")
         if stat:
             args.append("--stat")
         args.append(f"{ref_a}...{ref_b}")

@@ -19,7 +19,7 @@
 | 2 | Apply `validate_ref` to all ref-accepting tools (repos + commits templates) | ✅ |
 | 3 | `cexp_read_file` + `ref` (template + tests) | ✅ |
 | 4 | `cexp_list_files` + `ref` (template + tests) | ✅ |
-| 5 | `cexp_compare_commits` + `context` (template + tests) | ⬜ |
+| 5 | `cexp_compare_commits` + `context` (template + tests) | ✅ |
 | 6 | Docs: `README.md` + `META_MODEL_PROMPT.md` | ⬜ |
 | 7 | Regenerate `dist/`, full suite, final checks | ⬜ |
 

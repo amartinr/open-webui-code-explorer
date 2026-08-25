@@ -292,6 +292,55 @@ class TestCompareCommits:
         out = await tools.cexp_compare_commits("testowner/testrepo", "v1.0.0", "nope")
         assert out.startswith("Error:")
 
+    async def test_context_changes_unified_lines(self, repos_path, history_repo):
+        """A larger -U N must include more surrounding context lines in the
+        diff (the app.py change is a one-line edit, so -U 0 keeps only the
+        changed line, -U 5 pulls in the neighbours)."""
+        tools = await clone_source(repos_path, history_repo)
+        out0 = await tools.cexp_compare_commits(
+            "testowner/testrepo", "v1.0.0", "main", path="app.py", context=0
+        )
+        out5 = await tools.cexp_compare_commits(
+            "testowner/testrepo", "v1.0.0", "main", path="app.py", context=5
+        )
+        assert "@@" in out0
+        assert "@@" in out5
+        # -U 0: a single hunk covering just the changed line; -U 5 pulls in
+        # the neighbours, so the diff carries more lines.
+        assert out0.count("@@") == 2  # "@@ -2 +2 @@" (both sides)
+        assert out5.count("\n") > out0.count("\n")
+        assert "def main():" in out5
+
+    async def test_context_with_stat_ignored(self, repos_path, history_repo):
+        """--stat output is unaffected by -U N (no hunks); both must still
+        work together without error."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_compare_commits(
+            "testowner/testrepo", "v1.0.0", "main", stat=True, context=2
+        )
+        assert "app.py" in out
+        assert "file changed" in out or "files changed" in out
+
+    async def test_negative_context_rejected(self, repos_path, history_repo):
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_compare_commits(
+            "testowner/testrepo", "v1.0.0", "main", context=-1
+        )
+        assert out.startswith("Error:")
+        assert "context" in out
+
+    async def test_single_file_diff_narrows_to_the_file(self, repos_path, history_repo):
+        """The large-diff gap: a single-file diff narrows to the file of
+        interest (path=app.py) while the whole-tree diff would include
+        util.py too."""
+        tools = await clone_source(repos_path, history_repo)
+        out = await tools.cexp_compare_commits(
+            "testowner/testrepo", "v1.0.0", "main", path="app.py"
+        )
+        assert "app.py" in out
+        assert "return 2" in out
+        assert "util.py" not in out
+
 
 # ---------------------------------------------------------------------------
 # Open WebUI loading contract (DESIGN.md §9.1, §9.6)
