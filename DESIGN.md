@@ -519,6 +519,7 @@ cexp_search_text(
   case_sensitive:bool     # optional, default false
   files_only:    bool     # optional: one item per matching file ({"path"})
   count_only:    bool     # optional: one item per file with the match count ({"path", "count"}); prevails over files_only
+  ref:           str      # optional: git ref (branch/tag/hash); None = working tree
 )
 ```
 
@@ -528,6 +529,12 @@ cexp_search_text(
 - With `files_only`/`count_only`, the output is aggregated per file (one item
   per matching file, no lines) and `context` is ignored; `max_results` caps the
   *file* count in these modes. `count_only` prevails over `files_only`.
+- With `ref`, the snapshot is searched from the local object store
+  (`git ls-tree -r` + one `git cat-file --batch` call) with the SAME regex
+  engine — not `git grep`, so the regex dialect is unchanged. `.gitignore`
+  does not apply at a ref (git tracks no ignore state): every tracked blob
+  under the scope is searched; binary/non-UTF-8 blobs are skipped. Unknown
+  ref → `Error:` naming the ref; a path absent at the ref → `Not found:`.
 - Capped by the `max_results` Valve.
 
 ---
@@ -546,13 +553,14 @@ cexp_search_symbol(
   query:  str      # required (symbol name or partial)
   path:   str      # optional: narrow scope
   filter: str      # optional: file filter, glob pattern
+  ref:    str      # optional: git ref (branch/tag/hash); None = working tree
 )
 ```
 
-- Uses `rg` with language-aware patterns for definitions (functions, classes,
-  methods, constants). Implementation detail: derive patterns per file extension
-  or use `rg` with a curated set of regexes; do NOT run `ctags` unless
-  explicitly added to the allow-list.
+- Language-aware patterns for definitions (functions, classes, methods,
+  constants) — a curated regex set, not ctags/tree-sitter.
+- With `ref`, searches the snapshot from the local object store with the same
+  engine (see `cexp_search_text`); `.gitignore` does not apply there.
 - Capped by the `max_results` Valve.
 
 #### `cexp_list_branches`

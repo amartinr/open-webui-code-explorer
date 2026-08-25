@@ -29,6 +29,10 @@ Four self-contained scripts (one per Open WebUI Tool), generated from
   merge narrative, and its items carry `author` and `date`.
 - `cexp_search_text` takes `files_only`/`count_only` for per-file aggregate
   results (no line matches).
+- `cexp_search_text` / `cexp_search_symbol` take a `ref`: search the files as
+  they exist at a branch/tag/commit (from the local clone, no network, no
+  working-tree changes) — grep a released tag's content instead of only the
+  working tree.
 - `cexp_search_history(query, ...)` answers "when was this string introduced
   or removed?" (git pickaxe).
 - `cexp_list_branches` takes `merged=True/False` to filter by merge state.

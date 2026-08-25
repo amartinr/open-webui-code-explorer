@@ -70,7 +70,10 @@ allow-listed storage area.
     appear" use `cexp_search_text` with `files_only=True` (which files) or
     `count_only=True` (how many matches per file) before falling back to
     line matches; for "when was X introduced/removed" use
-    `cexp_search_history(query, path=, ref_a=, ref_b=)`.
+    `cexp_search_history(query, path=, ref_a=, ref_b=)`. To grep the
+    content of a released version, pass `ref=` to `cexp_search_text` /
+    `cexp_search_symbol` (searches the snapshot from the local clone — never
+    fetch it over the network; .gitignore does not apply there).
 12. **Manage clones deliberately.** `cexp_list_repos` shows each clone's
     `origin` and on-disk `size`; remove clones you no longer need with
     `cexp_remove_repo(repo, dry_run=True)` (preview path + size) before
