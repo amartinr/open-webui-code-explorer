@@ -11,6 +11,26 @@
 
 ---
 
+## 0. Execution log (updated after each step)
+
+| Step | Description | Status |
+|---|---|---|
+| 1 | `validate_ref` helper in `common.py` + unit tests | ✅ |
+| 2 | Apply `validate_ref` to all ref-accepting tools (repos + commits templates) | ⬜ |
+| 3 | `cexp_read_file` + `ref` (template + tests) | ⬜ |
+| 4 | `cexp_list_files` + `ref` (template + tests) | ⬜ |
+| 5 | `cexp_compare_commits` + `context` (template + tests) | ⬜ |
+| 6 | Docs: `README.md` + `META_MODEL_PROMPT.md` | ⬜ |
+| 7 | Regenerate `dist/`, full suite, final checks | ⬜ |
+
+Commit history (latest first) tracks the exact hashes; this log tracks status.
+
+Each step ends with: `python build.py` (dist/ is generated and committed),
+`python -m pytest` (all green), commit, push, then control returns to the
+user.
+
+---
+
 ## 1. Design decision (already made — do not re-litigate)
 
 **Extend the existing tools with optional selector parameters; do NOT add new

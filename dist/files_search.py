@@ -77,6 +77,7 @@ HEADLESS_ENV: Dict[str, str] = {
 }
 
 _REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/+-]*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _RELEASE_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)([-+].*)?$")
@@ -458,7 +459,11 @@ def _try_decode_rel(p: Path, root: Path) -> str:
 
 @dataclass
 class CommandResult:
-    """Captured pipes of a finished subprocess. Both streams are DATA."""
+    """Captured pipes of a finished subprocess. Both streams are DATA.
+
+    With `run_allowed(text=True)` (default) `stdout`/`stderr` are `str`;
+    with `text=False` they are `bytes` (raw output, decoded by the caller).
+    """
 
     stdout: str
     stderr: str
@@ -473,7 +478,7 @@ def _headless_env() -> Dict[str, str]:
     return env
 
 
-async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
+async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> CommandResult:
     """Run an allow-listed binary with arguments, capturing both pipes.
 
     - argv[0] MUST be one of ALLOWED_BINARIES (no arbitrary commands).
@@ -483,6 +488,10 @@ async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
     - Uses the fixed headless environment (§9.7) so git can never prompt,
       page, localize, or read user/global config.
     - On timeout raises ToolError(kind="timed_out").
+    - `text=False` captures raw bytes (stdout/stderr are `bytes`) so callers
+      that need byte-exact output (e.g. blob reads for binary/UTF-8
+      detection) can decode explicitly; `text=True` (default) decodes with
+      the process locale and is only for human-facing git output.
     """
     if not argv:
         raise ToolError("empty command")
@@ -498,13 +507,15 @@ async def run_allowed(argv: List[str], timeout: int) -> CommandResult:
             full,
             shell=False,
             capture_output=True,
-            text=True,
+            text=text,
             timeout=timeout,
             env=_headless_env(),
         )
     except subprocess.TimeoutExpired:
         raise ToolError(f"timed out after {timeout}s", kind="timed_out")
-    return CommandResult(stdout=proc.stdout or "", stderr=proc.stderr or "", returncode=proc.returncode)
+    stdout = proc.stdout or (b"" if not text else "")
+    stderr = proc.stderr or (b"" if not text else "")
+    return CommandResult(stdout=stdout, stderr=stderr, returncode=proc.returncode)
 
 
 def git_args(*args: str) -> List[str]:
@@ -581,6 +592,39 @@ def repo_component_ok(component: str) -> bool:
     NOTE: do NOT use ^[\\w.-]+/... - that accepts "..", enabling path traversal.
     """
     return bool(_REPO_COMPONENT_RE.match(component)) and component not in (".", "..")
+
+
+def validate_ref(ref: str) -> str:
+    """Validate a git ref (branch, tag, or commit hash) before it is
+    interpolated into any git argument (DESIGN.md §5.6, §6).
+
+    Accepts plain refs: branch names (including slash-containing ones like
+    "release/v1.0.0"), tags (including "v1.0.0-rc.1+build.5"), short/full
+    commit hashes, and "HEAD". Returns the ref unchanged.
+
+    Rejects (raising ToolError with a cause naming the offending ref): empty
+    strings, whitespace, a leading dash (option injection), ":" (revision:path
+    or protocol syntax), ".." (revision ranges), and anything outside
+    [A-Za-z0-9_./+-] (shell/revision metacharacters such as ~ ^ * ? [ ] { }
+    @ \\, and a leading "."). Revision expressions like "HEAD~1" or "main^"
+    are deliberately NOT supported: only plain branch/tag/commit refs.
+    """
+    if not ref or any(c.isspace() for c in ref):
+        raise ToolError(
+            f"invalid ref: {ref!r}", cause="refs may not be empty or contain whitespace"
+        )
+    if ref.startswith("-"):
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not start with '-'")
+    if ":" in ref:
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not contain ':'")
+    if ".." in ref:
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not contain '..'")
+    if not _REF_RE.match(ref):
+        raise ToolError(
+            f"invalid ref: {ref!r}",
+            cause="refs may only contain letters, digits, '_', '.', '/', '+' and '-'",
+        )
+    return ref
 
 
 def resolve_repo_root(repo: str, repos_path: str) -> Path:

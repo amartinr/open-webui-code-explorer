@@ -62,6 +62,7 @@ HEADLESS_ENV: Dict[str, str] = {
 }
 
 _REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/+-]*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _RELEASE_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)([-+].*)?$")
@@ -576,6 +577,39 @@ def repo_component_ok(component: str) -> bool:
     NOTE: do NOT use ^[\\w.-]+/... - that accepts "..", enabling path traversal.
     """
     return bool(_REPO_COMPONENT_RE.match(component)) and component not in (".", "..")
+
+
+def validate_ref(ref: str) -> str:
+    """Validate a git ref (branch, tag, or commit hash) before it is
+    interpolated into any git argument (DESIGN.md §5.6, §6).
+
+    Accepts plain refs: branch names (including slash-containing ones like
+    "release/v1.0.0"), tags (including "v1.0.0-rc.1+build.5"), short/full
+    commit hashes, and "HEAD". Returns the ref unchanged.
+
+    Rejects (raising ToolError with a cause naming the offending ref): empty
+    strings, whitespace, a leading dash (option injection), ":" (revision:path
+    or protocol syntax), ".." (revision ranges), and anything outside
+    [A-Za-z0-9_./+-] (shell/revision metacharacters such as ~ ^ * ? [ ] { }
+    @ \\, and a leading "."). Revision expressions like "HEAD~1" or "main^"
+    are deliberately NOT supported: only plain branch/tag/commit refs.
+    """
+    if not ref or any(c.isspace() for c in ref):
+        raise ToolError(
+            f"invalid ref: {ref!r}", cause="refs may not be empty or contain whitespace"
+        )
+    if ref.startswith("-"):
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not start with '-'")
+    if ":" in ref:
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not contain ':'")
+    if ".." in ref:
+        raise ToolError(f"invalid ref: {ref!r}", cause="refs may not contain '..'")
+    if not _REF_RE.match(ref):
+        raise ToolError(
+            f"invalid ref: {ref!r}",
+            cause="refs may only contain letters, digits, '_', '.', '/', '+' and '-'",
+        )
+    return ref
 
 
 def resolve_repo_root(repo: str, repos_path: str) -> Path:

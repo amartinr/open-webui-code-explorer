@@ -22,6 +22,7 @@ from common import (
     run_allowed,
     trim_cause,
     truncate_output,
+    validate_ref,
 )
 
 
@@ -79,6 +80,64 @@ class TestRepoComponentOk:
     )
     def test_invalid(self, bad):
         assert not repo_component_ok(bad)
+
+
+# ---------------------------------------------------------------------------
+# validate_ref (DESIGN.md §5.6, §6 - the ref-validation guard)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateRef:
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "main",
+            "origin/main",
+            "release/v1.0.0",
+            "v1.0.0",
+            "v1.0.0-rc.1+build.5",
+            "a1b2c3d",  # short hash
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",  # full hash
+            "HEAD",
+            "open_webui-dev",
+            "feature_x.y-z",
+        ],
+    )
+    def test_valid(self, good):
+        assert validate_ref(good) == good
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            "   ",  # whitespace only
+            "a b",  # whitespace inside
+            "-x",  # leading dash -> option injection
+            "--all",  # option injection
+            "a:b",  # revision:path / protocol syntax
+            "a..b",  # two-dot revision range
+            "a...b",  # three-dot revision range
+            "HEAD~1",  # revision expression
+            "main^",  # revision expression
+            "a*b",  # glob metachar
+            "a?b",  # glob metachar
+            "a[b]",  # glob metachar
+            "a{b}",  # revision metachar
+            "a@b",  # reflog metachar
+            r"a\b",  # backslash
+            ".hidden",  # leading dot
+        ],
+    )
+    def test_invalid(self, bad):
+        with pytest.raises(ToolError) as excinfo:
+            validate_ref(bad)
+        assert "invalid ref" in str(excinfo.value)
+        # The error must name the offending ref so the agent can correct it.
+        assert repr(bad) in str(excinfo.value)
+
+    def test_valid_does_not_mutate(self):
+        ref = "release/v2.3.4"
+        assert validate_ref(ref) is ref
 
 
 # ---------------------------------------------------------------------------
