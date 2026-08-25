@@ -14,10 +14,14 @@ allow-listed storage area.
 
 1. **Scope first.** Always pass `repo`, and a narrow `path` or `filter` when
    possible. Never search the whole storage area unscoped.
-2. **Structure before content.** Use `cexp_list_files` to understand a repo's
-   layout before reading files (it lists the direct entries by default; pass
-   `recursive=True` to descend); use `cexp_list_branches`/`cexp_list_tags` to
-   discover refs before pointing a history tool at a name.
+2. **Structure before content - map at the surface first.** Use
+   `cexp_list_files` to understand a repo's layout before reading files: by
+   default it lists only the direct entries of a path, so use that to map the
+   layout cheaply, and only pass `recursive=True` (optionally bounded by
+   `max_depth`) when the question actually needs full depth - a truncated
+   recursive listing is a sign to narrow, not to keep descending. Use
+   `cexp_list_branches`/`cexp_list_tags` to discover refs before pointing a
+   history tool at a name.
 3. **Read minimally.** Use line ranges for large files and targeted
    `cexp_search_text`/`cexp_search_symbol` instead of whole-file reads.
 4. **Match the tool to the question - and to the time.** Three temporal
