@@ -112,6 +112,68 @@ class TestListBranches:
         # The symbolic origin/HEAD pseudo-ref must be filtered out.
         assert not any("->" in n for n in names)
 
+    async def _merged_repo(self, git_daemon) -> DaemonSource:
+        """A repo with main, a merged branch (m1) and an unmerged branch (m2)."""
+        src = daemon_source(git_daemon, f"src-br-{uuid.uuid4().hex[:8]}")
+        src.mkdir(parents=True, exist_ok=True)
+        await run_git(src, "init", "-b", "main")
+        await commit_file(src, "a.txt", "a\n", "init")
+        await run_git(src, "checkout", "-b", "m1")
+        await commit_file(src, "m1.txt", "m1\n", "m1 work")
+        await run_git(src, "checkout", "main")
+        await run_git(src, *IDENT, "merge", "--no-ff", "-m", "merge m1", "m1")
+        await run_git(src, "checkout", "-b", "m2")
+        await commit_file(src, "m2.txt", "m2\n", "m2 work")
+        await run_git(src, "checkout", "main")
+        return src
+
+    async def test_merged_true_lists_only_merged(self, repos_path, git_daemon):
+        """E8: merged=True -> only branches merged into HEAD (main and the
+        merged m1); m2 (unmerged) is excluded. m1/m2 are created as LOCAL
+        branches in the clone (a clone only has the default branch locally)."""
+        src = await self._merged_repo(git_daemon)
+        tools = await clone_source(repos_path, src)
+        root = repos_path / "testowner" / "testrepo"
+        await run_git(root, "checkout", "-b", "m1", "origin/m1")
+        await run_git(root, "checkout", "-b", "m2", "origin/m2")
+        await run_git(root, "checkout", "main")
+        out = await tools.cexp_list_branches("testowner/testrepo", merged=True)
+        names = {i["branch"] for i in parse_json(out)["items"]}
+        assert "main" in names
+        assert "m1" in names
+        assert "m2" not in names
+
+    async def test_merged_false_lists_only_unmerged(self, repos_path, git_daemon):
+        """E8: merged=False -> only unmerged branches (m2); main and m1 are
+        excluded."""
+        src = await self._merged_repo(git_daemon)
+        tools = await clone_source(repos_path, src)
+        root = repos_path / "testowner" / "testrepo"
+        await run_git(root, "checkout", "-b", "m1", "origin/m1")
+        await run_git(root, "checkout", "-b", "m2", "origin/m2")
+        await run_git(root, "checkout", "main")
+        out = await tools.cexp_list_branches("testowner/testrepo", merged=False)
+        names = {i["branch"] for i in parse_json(out)["items"]}
+        assert "m2" in names
+        assert "main" not in names
+        assert "m1" not in names
+
+    async def test_merged_composes_with_remote(self, repos_path, git_daemon):
+        """E8: merged=True + remote=True shows merged local AND remote-tracking
+        branches (m1 as origin/m1)."""
+        src = await self._merged_repo(git_daemon)
+        tools = await clone_source(repos_path, src)
+        root = repos_path / "testowner" / "testrepo"
+        await run_git(root, "checkout", "-b", "m1", "origin/m1")
+        await run_git(root, "checkout", "main")
+        out = await tools.cexp_list_branches("testowner/testrepo", remote=True, merged=True)
+        names = {i["branch"] for i in parse_json(out)["items"]}
+        assert "main" in names
+        assert "m1" in names
+        assert "m2" not in names
+        assert "origin/main" in names
+        assert "origin/m1" in names
+
     async def test_detached_head_marks_current(self, repos_path, history_repo):
         repos_tools = ReposTools()
         repos_tools.valves.repos_path = str(repos_path)

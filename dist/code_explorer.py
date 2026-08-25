@@ -2005,6 +2005,7 @@ class Tools:
         self,
         repo: str,
         remote: bool = False,
+        merged: Optional[bool] = None,
     ) -> str:
         """List branches of a repository.
 
@@ -2012,23 +2013,30 @@ class Tools:
         cexp_list_commits, cexp_show_commit, or cexp_compare_commits at a branch name.
         Local branches by default; with remote=True, remote-tracking branches
         appear as origin/<name> (reflecting the last fetch, never the live
-        network state). Returns a JSON object with an items array of
+        network state). With merged=True, only branches already merged into
+        HEAD are listed ("is dev already in main?"); merged=False lists only
+        unmerged branches. Returns a JSON object with an items array of
         {"branch", "current"} entries (current marks the checked-out branch).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param remote: Optional; if True, also include remote-tracking branches.
+        :param merged: Optional; True = only branches merged into HEAD, False = only unmerged, None (default) = all branches.
         """
         try:
-            return await self._list_branches(repo, remote)
+            return await self._list_branches(repo, remote, merged)
         except Exception as e:
             return error_string(e)
 
-    async def _list_branches(self, repo: str, remote: bool) -> str:
+    async def _list_branches(self, repo: str, remote: bool, merged: Optional[bool]) -> str:
         root = resolve_repo_root(repo, resolve_repos_path(self.valves.repos_path))
         self._ensure_repo_exists(root, repo)
         args = git_args("-C", str(root), "branch", "--no-color")
         if remote:
             args.append("-a")
+        if merged is True:
+            args.append("--merged")
+        elif merged is False:
+            args.append("--no-merged")
         res = await run_allowed(args, TIMEOUT_SEARCH)
         if res.returncode != 0:
             raise ToolError(f"list branches failed: {repo}", cause=trim_cause(res.stderr))
