@@ -524,7 +524,9 @@ def _headless_env() -> Dict[str, str]:
     return env
 
 
-async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> CommandResult:
+async def run_allowed(
+    argv: List[str], timeout: int, *, text: bool = True, input: Optional[bytes] = None
+) -> CommandResult:
     """Run an allow-listed binary with arguments, capturing both pipes.
 
     - argv[0] MUST be one of ALLOWED_BINARIES (no arbitrary commands).
@@ -538,6 +540,8 @@ async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> Co
       that need byte-exact output (e.g. blob reads for binary/UTF-8
       detection) can decode explicitly; `text=True` (default) decodes with
       the process locale and is only for human-facing git output.
+    - `input` (bytes) is written to the child's stdin (e.g. `git cat-file
+      --batch` fed a list of rev:path lines); use it with `text=False`.
     """
     if not argv:
         raise ToolError("empty command")
@@ -556,6 +560,7 @@ async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> Co
             text=text,
             timeout=timeout,
             env=_headless_env(),
+            input=input,
         )
     except subprocess.TimeoutExpired:
         raise ToolError(f"timed out after {timeout}s", kind="timed_out")

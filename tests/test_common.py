@@ -459,6 +459,17 @@ class TestRunAllowed:
         res = await run_allowed(git_args("-C", str(tmp_path), "rev-parse", "--git-dir"), 10)
         assert res.returncode != 0
 
+    async def test_run_allowed_stdin_input(self):
+        """E11: run_allowed can feed bytes to the child's stdin (used by
+        `git cat-file --batch`); output stays bytes with text=False."""
+        res = await run_allowed(
+            ["git", "hash-object", "--stdin"], 10, text=False, input=b"hello"
+        )
+        assert res.returncode == 0, res.stderr
+        assert isinstance(res.stdout, bytes)
+        # Deterministic git-computed id of the stdin bytes (40 hex chars).
+        assert res.stdout.strip() == b"b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0"
+
 
 # ---------------------------------------------------------------------------
 # Output capping (DESIGN.md §4.4, §5.5)

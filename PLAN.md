@@ -30,7 +30,8 @@
 | 12 | E9: `cexp_remove_repo` lifecycle tool (template + tests; combined-tool discovery 14 -> 15) | ✅ |
 | 13 | E10: `size` field in `cexp_list_repos` (template + tests) | ✅ |
 | 14 | Docs (`DESIGN.md` §6/§7, `README.md`, `META_MODEL_PROMPT.md`) + version bump `1.2.0` (4 places) | ✅ |
-| 15 | Regenerate `dist/`, full suite, final checks (grep for `import common` / markers, combined tool count) | ☐ |
+| 15 | Regenerate `dist/`, full suite, final checks (grep for `import common` / markers, combined tool count) | ✅ |
+| 16 | E11: `ref` on `cexp_search_text`/`cexp_search_symbol` (content search at a snapshot) | ✅ |
 
 Each step ends with: `python build.py` (dist/ is generated and committed), `python -m pytest` (all green), commit, push, then control returns to the user.
 
@@ -178,6 +179,35 @@ Note: this is the **14th public tool**. `tests/test_valves.py::test_combined_scr
 Note: `tests/test_valves.py` currently enforces the **identical** Valves field set across all four scripts (`set(fields) == set(REQUIRED_VALVES)`). Adding `allowed_hosts` to Repos only is a deliberate contract change: update the test so `REQUIRED_VALVES` remains the shared core (`set(REQUIRED_VALVES) <= set(fields)`) and Repos is the one script allowed the extra `allowed_hosts` field.
 
 **Tests:** host in list passes; host outside → `Error:`; empty list = unrestricted; subdomain of listed host allowed; credential rules still enforced.
+
+---
+
+## E11. `cexp_search_text` / `cexp_search_symbol` gain `ref` (content search at a snapshot)
+
+User-reported gap: the search tools were the only read tools anchored to the
+working tree (`cexp_read_file`/`cexp_list_files` already accept `ref`), so
+there was no way to grep a tag's content — only list/read it file by file.
+
+- Add `ref: Optional[str] = None` to both tools (working tree by default;
+  backward compatible). When given: enumerate with `git ls-tree -r
+  --name-only <ref>`, read the blobs in **one** `git cat-file --batch` call
+  (new `input` kwarg on `run_allowed` feeds the rev:path list via stdin),
+  skip binary/non-UTF-8 blobs (`_scan_encoding_bytes`), and run the SAME
+  pure-Python regex engine — no `git grep`, so the regex dialect stays the
+  `regex`/`re` one (ERE would change semantics).
+- `.gitignore` does not apply at a ref (git tracks no ignore state): every
+  tracked blob under the scope is searched; document this in the docstrings.
+- Unknown ref → `Error:` naming the ref; a path absent at the ref → `Not
+  found:` (mirrors `_list_files_at_ref`).
+- The working-tree and ref paths both produce `(rel, text)` rows fed by the
+  same aggregation (lines / files_only / count_only), via new shared helpers
+  `_worktree_texts` and `_blob_texts_at_ref`.
+
+**Tests:** parity (ref="main" == working tree on a clean tree), snapshot
+semantics (tag, then change the tree: at-ref sees the old content), path
+narrowing (dir + file), unknown ref, absent path, binary blob skipped,
+count_only at ref, malicious ref rejected, symbol-at-ref, and the new
+`run_allowed` stdin input path.
 
 ---
 

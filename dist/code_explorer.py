@@ -526,7 +526,9 @@ def _headless_env() -> Dict[str, str]:
     return env
 
 
-async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> CommandResult:
+async def run_allowed(
+    argv: List[str], timeout: int, *, text: bool = True, input: Optional[bytes] = None
+) -> CommandResult:
     """Run an allow-listed binary with arguments, capturing both pipes.
 
     - argv[0] MUST be one of ALLOWED_BINARIES (no arbitrary commands).
@@ -540,6 +542,8 @@ async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> Co
       that need byte-exact output (e.g. blob reads for binary/UTF-8
       detection) can decode explicitly; `text=True` (default) decodes with
       the process locale and is only for human-facing git output.
+    - `input` (bytes) is written to the child's stdin (e.g. `git cat-file
+      --batch` fed a list of rev:path lines); use it with `text=False`.
     """
     if not argv:
         raise ToolError("empty command")
@@ -558,6 +562,7 @@ async def run_allowed(argv: List[str], timeout: int, *, text: bool = True) -> Co
             text=text,
             timeout=timeout,
             env=_headless_env(),
+            input=input,
         )
     except subprocess.TimeoutExpired:
         raise ToolError(f"timed out after {timeout}s", kind="timed_out")
@@ -1856,6 +1861,7 @@ class Tools:
         case_sensitive: bool = False,
         files_only: bool = False,
         count_only: bool = False,
+        ref: Optional[str] = None,
     ) -> str:
         """Search repository contents with a pure-Python regex engine.
 
@@ -1864,6 +1870,10 @@ class Tools:
         text (plus optional context lines). With files_only=True, returns one
         item per matching file ({"path"}); with count_only=True, one item per
         file with the match count ({"path", "count"}). Honors .gitignore.
+        With ref, searches the files as they exist at that branch/tag/commit
+        from the local git object store (no working-tree changes, no network);
+        .gitignore does not apply there - every tracked blob under the scope
+        is searched (binary and non-UTF-8 blobs are skipped).
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Regular expression to search for (required).
@@ -1873,10 +1883,11 @@ class Tools:
         :param case_sensitive: Optional; default False (case-insensitive).
         :param files_only: Optional; if True, return one item per matching file (path only), no lines.
         :param count_only: Optional; if True, return one item per file with the number of matches, no lines (prevails over files_only).
+        :param ref: Optional git ref (branch, tag, or commit hash) to search the snapshot at; None (default) searches the working tree. Only plain refs are accepted; revision expressions like HEAD~1 are rejected.
         """
         try:
             return await self._search_text(
-                repo, query, path, filter, context, case_sensitive, files_only, count_only
+                repo, query, path, filter, context, case_sensitive, files_only, count_only, ref
             )
         except Exception as e:
             return error_string(e)
@@ -1891,6 +1902,7 @@ class Tools:
         case_sensitive: bool,
         files_only: bool,
         count_only: bool,
+        ref: Optional[str],
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
@@ -1899,17 +1911,20 @@ class Tools:
             raise ToolError("query must not be empty")
         if context is not None and context < 0:
             raise ToolError(f"context must be >= 0, got {context}")
-        base = resolve_path(repo, path, repos_path) if path else root
-        if not base.exists():
-            raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
-        includes, excludes = parse_filter(filter)
         pattern = _compile_pattern(query, case_sensitive)
+        if ref is not None:
+            rows = await self._blob_texts_at_ref(root, repo, path, filter, ref)
+        else:
+            base = resolve_path(repo, path, repos_path) if path else root
+            if not base.exists():
+                raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
+            includes, excludes = parse_filter(filter)
+            rows = self._worktree_texts(root, base, includes, excludes)
 
         if count_only:
             # One item per file: {path, count}. No line matches, no context.
             items = []
-            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-                _, text = _binary_or_readable(fp)
+            for rel_f, text in rows:
                 count = sum(1 for line in text.split("\n") if pattern.search(line))
                 if count:
                     items.append({"path": rel_f, "count": count})
@@ -1917,15 +1932,13 @@ class Tools:
         elif files_only:
             # One item per matching file: {path}. No lines, no context.
             items = []
-            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-                _, text = _binary_or_readable(fp)
+            for rel_f, text in rows:
                 if any(pattern.search(line) for line in text.split("\n")):
                     items.append({"path": rel_f})
             items.sort(key=lambda i: i["path"])
         else:
             items = []
-            for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-                _, text = _binary_or_readable(fp)
+            for rel_f, text in rows:
                 _search_in_text(pattern, text, 0, context or 0, rel_f, items)
             items.sort(key=lambda i: (i["path"], i.get("line") or 0))
 
@@ -1943,6 +1956,7 @@ class Tools:
         query: str,
         path: Optional[str] = None,
         filter: Optional[str] = None,
+        ref: Optional[str] = None,
     ) -> str:
         """Find definitions of a symbol (function, class, method, constant).
 
@@ -1953,15 +1967,18 @@ class Tools:
         {"path", "line", "text"}. Case-sensitive by default, since
         identifiers are case-sensitive in virtually every language. Heuristic,
         not a full parser: expect occasional false positives/negatives on
-        exotic syntax.
+        exotic syntax. With ref, searches the snapshot at that branch/tag/
+        commit from the local git object store (no working-tree changes, no
+        network); .gitignore does not apply there.
 
         :param repo: "<owner>/<name>" of an already-cloned repository.
         :param query: Symbol name or partial (required).
         :param path: Optional subdirectory or file to narrow the search, relative to the repository root; do NOT include the "<owner>/<name>" prefix; always use "/" as separator (e.g. "src/").
         :param filter: Optional space-separated glob patterns; a leading "!" excludes.
+        :param ref: Optional git ref (branch, tag, or commit hash) to search the snapshot at; None (default) searches the working tree. Only plain refs are accepted; revision expressions like HEAD~1 are rejected.
         """
         try:
-            return await self._search_symbol(repo, query, path, filter)
+            return await self._search_symbol(repo, query, path, filter, ref)
         except Exception as e:
             return error_string(e)
 
@@ -1971,16 +1988,21 @@ class Tools:
         query: str,
         path: Optional[str],
         filter: Optional[str],
+        ref: Optional[str],
     ) -> str:
         repos_path = resolve_repos_path(self.valves.repos_path)
         root = resolve_repo_root(repo, repos_path)
         self._ensure_repo_exists(root, repo)
         if not query or not query.strip():
             raise ToolError("query must not be empty")
-        base = resolve_path(repo, path, repos_path) if path else root
-        if not base.exists():
-            raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
-        includes, excludes = parse_filter(filter)
+        if ref is not None:
+            rows = await self._blob_texts_at_ref(root, repo, path, filter, ref)
+        else:
+            base = resolve_path(repo, path, repos_path) if path else root
+            if not base.exists():
+                raise ToolError(f"path not found: {path} in {repo}", kind="not_found")
+            includes, excludes = parse_filter(filter)
+            rows = self._worktree_texts(root, base, includes, excludes)
 
         # Definition patterns: a keyword followed by the symbol name, or a
         # top-level `NAME =` assignment (constants). Case-sensitive (symbols).
@@ -2004,8 +2026,7 @@ class Tools:
         )
 
         items = []
-        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
-            _, text = _binary_or_readable(fp)
+        for rel_f, text in rows:
             _search_in_text(pattern, text, 0, 0, rel_f, items)
 
         items.sort(key=lambda i: (i["path"], i.get("line") or 0))
@@ -2060,6 +2081,92 @@ class Tools:
                 if _is_binary_path(fp):
                     continue
                 yield rel_f, fp
+
+    def _worktree_texts(self, root: Path, base: Path, includes: List[str], excludes: List[str]):
+        """Rows (rel_path, text) for the working-tree text files under `base`
+        (gitignore + filter globs applied, binary skipped), shaped like the
+        at-ref rows so both search sources share the same aggregation."""
+        rows = []
+        for rel_f, fp in self._iter_text_files(root, base, includes, excludes):
+            _, text = _binary_or_readable(fp)
+            rows.append((rel_f, text))
+        return rows
+
+    async def _blob_texts_at_ref(
+        self,
+        root: Path,
+        repo: str,
+        path: Optional[str],
+        filter: Optional[str],
+        ref: str,
+    ) -> List[tuple]:
+        """Rows (rel_path, text) for a git snapshot (ref): enumerate with
+        `git ls-tree -r`, read the blobs with one `git cat-file --batch`
+        call, skip binary/non-UTF-8 blobs, and apply the same filter globs as
+        the working-tree search. .gitignore does not apply (git tracks no
+        ignore state): every tracked blob under the scope is searched. Unknown
+        ref -> Error naming the ref; a path absent at the ref -> Not found."""
+        ref = validate_ref(ref)
+        repos_path = resolve_repos_path(self.valves.repos_path)
+        base = resolve_path(repo, path, repos_path)  # traversal safety only
+        res = await run_allowed(
+            git_args("-C", str(root), "ls-tree", "-r", "--name-only", ref),
+            TIMEOUT_SEARCH,
+        )
+        if res.returncode != 0:
+            raise ToolError(
+                f"unknown ref: {ref!r}",
+                cause=trim_cause(res.stderr) or "ref does not exist in this repository",
+            )
+        files = [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+
+        if path:
+            try:
+                base_rel = base.relative_to(root).as_posix()
+            except ValueError:
+                raise ToolError(f"invalid path: {path!r}")
+            if base_rel == ".":
+                base_rel = ""
+            if base_rel:
+                files = [f for f in files if f == base_rel or f.startswith(base_rel + "/")]
+                if not files:
+                    raise ToolError(f"path not found at {ref}: {path}", kind="not_found")
+        includes, excludes = parse_filter(filter)
+
+        payload = "".join(f"{ref}:{f}\n" for f in files).encode("utf-8")
+        res = await run_allowed(
+            git_args("-C", str(root), "cat-file", "--batch"),
+            TIMEOUT_SEARCH,
+            text=False,
+            input=payload,
+        )
+        if res.returncode != 0:
+            raise ToolError(f"cannot read blobs at {ref}", cause=trim_cause(res.stderr))
+        rows: List[tuple] = []
+        data = res.stdout
+        pos = 0
+        for rel in files:
+            nl = data.find(b"\n", pos)
+            if nl < 0:
+                break
+            header = data[pos:nl].split(b" ")
+            pos = nl + 1
+            if len(header) < 3 or header[1] != b"blob":
+                continue  # "<name> missing" or a non-blob: nothing follows
+            try:
+                size = int(header[2])
+            except ValueError:
+                break
+            content = data[pos : pos + size]
+            pos += size
+            if pos < len(data) and data[pos : pos + 1] == b"\n":
+                pos += 1
+            if not glob_match(rel, includes, excludes):
+                continue
+            if _scan_encoding_bytes(content) is not None:
+                continue  # binary or non-UTF-8: skip, like the working tree
+            rows.append((rel, _decode_text(content)))
+        return rows
 
     async def cexp_list_branches(
         self,

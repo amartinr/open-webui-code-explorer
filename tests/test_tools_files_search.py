@@ -816,6 +816,110 @@ class TestSearchText:
         assert "truncated" not in out
         assert "hint:" not in out
 
+    # ------------------------------------------------------------------
+    # E11: cexp_search_text / cexp_search_symbol at a ref
+    # ------------------------------------------------------------------
+
+    async def test_search_text_at_ref_parity(self, repos_path, source_repo):
+        """E11: searching ref="main" matches the working-tree result (the
+        working tree is clean here)."""
+        tools = await clone_source(repos_path, source_repo)
+        no_ref = parse_json(await tools.cexp_search_text("testowner/testrepo", "def "))
+        at_ref = parse_json(
+            await tools.cexp_search_text("testowner/testrepo", "def ", ref="main")
+        )
+        assert {i["path"]: i["line"] for i in no_ref["items"]} == {
+            i["path"]: i["line"] for i in at_ref["items"]
+        }
+
+    async def test_search_text_at_ref_sees_snapshot(self, repos_path, source_repo):
+        """E11: tag the state, then change the working tree: at-ref search sees
+        the snapshot, the working-tree search sees the change."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        await run_git(clone, "tag", "v1.0.0")
+        # Remove the 'world' definition in the working tree and commit it.
+        (clone / "hello.py").write_text("def hello():\n    return 'hi'\n")
+        await run_git(clone, "add", "hello.py")
+        await run_git(clone, *IDENT, "commit", "-m", "drop world")
+
+        worktree = parse_json(await tools.cexp_search_text("testowner/testrepo", "world"))
+        assert worktree["items"] == []  # gone from the working tree
+        at_ref = parse_json(
+            await tools.cexp_search_text("testowner/testrepo", "world", ref="v1.0.0")
+        )
+        assert [i["path"] for i in at_ref["items"]] == ["hello.py"]  # still in the tag
+
+    async def test_search_text_at_ref_path_narrowing(self, repos_path, source_repo):
+        """E11: path= narrows the snapshot search (dir and file forms)."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "pass", path="sub", ref="main"
+        )
+        assert [i["path"] for i in parse_json(out)["items"]] == ["sub/deep.py"]
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "pass", path="sub/deep.py", ref="main"
+        )
+        assert [i["path"] for i in parse_json(out)["items"]] == ["sub/deep.py"]
+
+    async def test_search_text_at_ref_unknown_ref(self, repos_path, source_repo):
+        """E11: unknown ref -> Error naming the ref."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text("testowner/testrepo", "def ", ref="nope")
+        assert out.startswith("Error:")
+        assert "nope" in out
+
+    async def test_search_text_at_ref_bad_path_not_found(self, repos_path, source_repo):
+        """E11: a path absent at the ref -> Not found."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "def ", path="missing", ref="main"
+        )
+        assert out.startswith("Not found:")
+
+    async def test_search_text_at_ref_skips_binary_blobs(self, repos_path, source_repo):
+        """E11: binary blobs at the ref are skipped (data.bin contains the
+        word 'binary' but with NUL bytes), like the working-tree search."""
+        tools = await clone_source(repos_path, source_repo)
+        worktree = parse_json(await tools.cexp_search_text("testowner/testrepo", "binary"))
+        assert worktree["items"] == []
+        at_ref = parse_json(
+            await tools.cexp_search_text("testowner/testrepo", "binary", ref="main")
+        )
+        assert at_ref["items"] == []
+
+    async def test_search_text_at_ref_count_only(self, repos_path, source_repo):
+        """E11: aggregate modes compose with ref."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text(
+            "testowner/testrepo", "def ", ref="main", count_only=True
+        )
+        assert parse_json(out)["items"] == [{"path": "hello.py", "count": 2}]
+
+    async def test_search_text_at_ref_malicious_ref(self, repos_path, source_repo):
+        """E11: refs go through validate_ref before reaching git."""
+        tools = await clone_source(repos_path, source_repo)
+        out = await tools.cexp_search_text("testowner/testrepo", "def ", ref="--all")
+        assert out.startswith("Error:")
+        assert "invalid ref" in out
+
+    async def test_search_symbol_at_ref_sees_snapshot(self, repos_path, source_repo):
+        """E11: a symbol added after the tag is not found at the tag, but is
+        found in the working tree."""
+        tools = await clone_source(repos_path, source_repo)
+        clone = repos_path / "testowner" / "testrepo"
+        await run_git(clone, "tag", "v1.0.0")
+        (clone / "late.py").write_text("def late_symbol():\n    pass\n")
+        await run_git(clone, "add", "late.py")
+        await run_git(clone, *IDENT, "commit", "-m", "add late")
+
+        worktree = parse_json(await tools.cexp_search_symbol("testowner/testrepo", "late_symbol"))
+        assert [i["path"] for i in worktree["items"]] == ["late.py"]
+        at_ref = parse_json(
+            await tools.cexp_search_symbol("testowner/testrepo", "late_symbol", ref="v1.0.0")
+        )
+        assert at_ref["items"] == []  # the tag predates it
+
 
 # ---------------------------------------------------------------------------
 # cexp_search_symbol
