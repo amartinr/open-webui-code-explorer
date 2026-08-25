@@ -230,6 +230,26 @@ def validate_ref(ref: str) -> str
 # names); reject empty strings, leading dashes, ":", "..", whitespace, and
 # shell metacharacters (~ ^ * ? [ ] { } @ \). Raise ToolError naming the
 # offending ref. Deliberately rejects revision expressions (HEAD~1, main^).
+
+def validate_clone_url(url: str) -> str
+# Validate and normalize a clone `url` override before it reaches git
+# (Enhancement B, ENHANCEMENT_B.md). Protocol allow-list: https/http/git/ssh;
+# everything else (ext::/sh:: command URLs, file://, ftp, rsync, ...) is
+# rejected with a cause explaining why. scp-like "user@host:path" is
+# normalized to ssh://user@host/path (git's own scp-like semantics; no port
+# syntax in that form). Credentials in the URL are rejected (they would be
+# persisted in <repo>/.git/config), except the ssh username (the normal ssh
+# form). Returns the normalized URL.
+
+def _normalize_remote(url: str) -> str
+# Canonical form for COMPARING remotes (collision detection only): lowercase
+# scheme+host, strip trailing ".git" and "/", keep path case. So
+# https://github.com/o/r and https://github.com/o/r.git compare equal.
+
+async def _remote_origin(root: str) -> str
+# The repo's remote origin URL (git -C <root> remote get-url origin), or ""
+# when there is no origin. Used by the clone-collision message and by
+# cexp_list_repos (new `origin` field, Enhancement B).
 ```
 
 `ToolError` is a shared exception mapped to a user-facing message (never a raw
@@ -1132,15 +1152,24 @@ working-tree mutation for reads.
 - Build regenerates `dist/`, the full suite is green, and docs reflect the new
   surface.
 
-### 12.2 Enhancement B — Multi-Host Repository Support (deferred)
+### 12.2 Enhancement B — Git Provider & Protocol Selection (proposed)
 
-**Status:** deferred; separate proposal, no hard ordering dependency on A.
+**Status:** redesigned (was "multi-host directory restructure"); see
+`ENHANCEMENT_B.md` for the full proposal. No hard ordering dependency on A.
 
-The repository identifier is redefined as `<host>/<owner>/<name>` (three
-components, mandatory, no backward-compat fallback); storage maps 1:1 to
-`<repos_path>/<host>/<owner>/<name>`; the default clone URL becomes
-`https://<host>/<owner>/<name>.git`. The host component is validated with a
-strict regex; a protocol allow-list (https/http/git/ssh) is added to the clone
-`url` override (closing the RCE gap where only a leading dash was rejected).
-`cexp_list_repos` returns `host`. See the separate proposal for full scope,
-tests, and order.
+The directory layout STAYS `<repos_path>/<owner>/<name>` (two levels): the
+provider/protocol is NOT part of the path. It is metadata already persisted
+by git itself (`remote.origin.url` in `<repo>/.git/config`, written by the
+clone including any `url` override); the tools only read and expose it — in
+the clone-collision message and in `cexp_list_repos`'s new `origin` field.
+Namespace collisions are managed (informative `Error:` naming the existing
+origin and the decision path: fetch/pull when the origin matches, review via
+`cexp_list_repos` when it does not), not avoided by re-layout. The protocol
+allow-list (https/http/git/ssh) on the clone `url` override closes the RCE/
+exfiltration gap where only a leading dash was rejected; scp-like
+`user@host:path` is normalized to `ssh://`; credentials in URLs are rejected
+(they would persist in `.git/config`); `file://` and `ext::`/`sh::` are
+blocked (local exfiltration / command execution). A three-level
+`<host>/<owner>/<name>` layout is explicitly deferred: it would only be
+justified if two same-namespace repos from different providers must coexist
+simultaneously. See `ENHANCEMENT_B.md` for full scope, tests, and order.
