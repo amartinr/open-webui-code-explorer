@@ -158,11 +158,12 @@ Note: the "Files & Search" script is created in Phase 2 with `cexp_list_files`,
 Phase 3 (not stubbed earlier). The "Commits" script is created in Phase 3
 complete with all five tools (not stubbed earlier).
 
-### 5.5 Shared Valves (identical contract across the three scripts)
+### 5.5 Shared Valves (identical contract across the tool scripts)
 
 Each script defines its **own** `Valves` class (Open WebUI Valves are
 per-script). To avoid drift, the same fields with the same names and defaults
-MUST be declared consistently in all three scripts.
+MUST be declared consistently in every generated script (the three per-group
+scripts plus the combined `code_explorer.py`, §5.4).
 
 Admin-facing Valves (not exposed to the agent):
 
@@ -176,10 +177,13 @@ Admin-facing Valves (not exposed to the agent):
 | `min_free_bytes` | int | `2147483648` | **Cloner-only extra (S6-A)**: minimum free disk space (bytes) on the repos volume before a clone starts (2 GiB default); `0` disables. A clone that could exhaust the disk is rejected up front (Error + audit WARNING), before any network work. |
 | `max_repo_bytes` | int | `2147483648` | **Cloner-only extra (S6-B)**: maximum `.git` size (bytes) for a new clone (2 GiB default); `0` disables. Enforced via a **two-phase clone** (§5.7): the object store is fetched first and the working tree is checked out only when the measured size is under the limit; otherwise the fetch is discarded. |
 
-All three scripts need `repos_path` (even read/search/commit tools must locate
-the repositories). The **`OWUI_REPOS_PATH` env var is the recommended global
-single source of truth**: set it once at the container level and leave the
-`repos_path` Valve empty, so the per-script Valves rarely need to diverge.
+Every generated script needs `repos_path` (even read/search/commit tools must
+locate the repositories). The **`OWUI_REPOS_PATH` env var is the recommended
+global single source of truth**: set it once at the container level and leave
+the `repos_path` Valve empty, so the per-script Valves rarely need to diverge.
+The cloner-only extras (`allowed_hosts`, `min_free_bytes`, `max_repo_bytes`)
+are present on `repos.py` and `code_explorer.py` only — mirrored by the
+Valves contract test — because only those two scripts can clone.
 
 These caps are **infrastructure/safety policy** (protect against huge outputs,
 timeouts, and context exhaustion), so they belong to the operator, not the

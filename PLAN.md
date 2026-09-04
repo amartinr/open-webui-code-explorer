@@ -50,7 +50,8 @@ recorded cause beyond the audit event.
 
 This plan (a) analyzes the weaknesses of the current tools along the storage
 dimension, (b) proposes three candidate safeguards with trade-offs, and (c)
-asks the maintainer to decide which (if any) to implement.
+records the maintainer's decision in §4 — A and B implemented on this branch,
+C deferred.
 
 ## 2. Weakness analysis of the current tools
 
