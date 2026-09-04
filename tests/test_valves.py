@@ -64,11 +64,15 @@ def test_valves_contract_identical(script):
         assert field.default == expected_default, (
             f"{script}.{name}: default {field.default!r} != {expected_default!r}"
         )
-    # Only the scripts that can clone may add the allowed_hosts Valve (S3).
+    # Only the scripts that can clone may add the cloner-only Valves: the
+    # allowed_hosts allow-list (S3) and the S6 storage guardrails
+    # (min_free_bytes pre-flight + max_repo_bytes size gate).
     extras = set(fields) - set(REQUIRED_VALVES)
     cloners = {"repos.py", "code_explorer.py"}
     if script in cloners:
-        assert extras == {"allowed_hosts"}, f"{script}: unexpected extra valves {extras}"
+        assert extras == {"allowed_hosts", "min_free_bytes", "max_repo_bytes"}, (
+            f"{script}: unexpected extra valves {extras}"
+        )
     else:
         assert not extras, f"{script}: unexpected extra valves {extras}"
 
@@ -101,9 +105,14 @@ async def test_admin_valves_take_effect_at_runtime(tmp_path, git_daemon):
     The tools must honor the ADMIN values, not the __init__ defaults."""
     src = await _init_source_repo(daemon_source(git_daemon, "valves-src"))
 
-    # Clone with the Repos script.
+    # Clone with the Repos script. The S6 storage guardrails default to a
+    # 2 GiB free-space floor, which would make this test depend on the
+    # machine's real disk state, so they are disabled explicitly (their
+    # behaviour is covered by TestStorageGuardrails in test_tools_repos.py).
     repos_tools = ReposTools()
-    repos_tools.valves = repos_tools.Valves(repos_path=str(tmp_path / "repos"))
+    repos_tools.valves = repos_tools.Valves(
+        repos_path=str(tmp_path / "repos"), min_free_bytes=0, max_repo_bytes=0
+    )
     out = await repos_tools.cexp_clone_repo("o/r", url=src.url)
     assert not out.startswith("Error:"), out
 

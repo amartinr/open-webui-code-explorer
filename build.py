@@ -38,7 +38,7 @@ ALL_FRONTMATTER = '''"""
 title: Code Explorer - All
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.4
+version: 1.2.5
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: All Code Explorer tools in one script, prefixed cexp_: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -90,6 +90,8 @@ def build_combined(common_code: str, methods: List[Tuple[str, str]]) -> str:
         + "    class Valves(BaseModel):\n"
         + '        repos_path: str = Field(\n            "",\n            description="Base directory for repository clones. Empty -> $OWUI_REPOS_PATH -> /usr/local/src. A dedicated volume must be mounted there and the process needs read/write permission; this Valve is a logical override only.",\n        )\n'
         + '        allowed_hosts: str = Field(\n            "",\n            description="Comma-separated host allow-list for cexp_clone_repo. Empty (default): no restriction. When set, only origins whose host matches exactly or is a subdomain of a listed host may be cloned.",\n        )\n'
+        + '        min_free_bytes: int = Field(\n            2147483648,\n            description="Minimum free disk space (bytes) required on the repos volume before a clone starts (2 GiB default). 0 disables the check; a clone that could exhaust the disk is rejected with an Error before any network work.",\n        )\n'
+        + '        max_repo_bytes: int = Field(\n            2147483648,\n            description="Maximum .git size (bytes) allowed for a new clone, measured via a two-phase clone: the object store is fetched first and the working tree is checked out only if it is under this limit (2 GiB default; treat it as a .git budget - the checkout roughly doubles the footprint). 0 disables the check.",\n        )\n'
         + "        max_results: int = Field(\n            50, description=\"Cap on item counts (files, matches, commits, branches, tags).\"\n        )\n"
         + "        max_lines: int = Field(\n            200, description=\"Cap on output lines. Whichever cap is hit first truncates.\"\n        )\n"
         + "        max_bytes: int = Field(\n            20480, description=\"Hard byte cap on tool output (20 KB default).\"\n        )\n"

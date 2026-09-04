@@ -2,7 +2,7 @@
 title: Code Explorer - All
 author: A. Martin
 author_url: https://github.com/amartinr
-version: 1.2.4
+version: 1.2.5
 icon_url: https://github.com/amartinr/open-webui-code-explorer/raw/main/docs/icon.svg
 description: All Code Explorer tools in one script, prefixed cexp_: clone/fetch/pull/list repos, list/read/search files, find symbols, and inspect branches, tags, and commits. Read-only with respect to source code; only clone/fetch/pull write inside the allow-listed repositories directory, and only via git.
 required_open_webui_version: 0.9.6
@@ -1068,6 +1068,14 @@ class Tools:
             "",
             description="Comma-separated host allow-list for cexp_clone_repo. Empty (default): no restriction. When set, only origins whose host matches exactly or is a subdomain of a listed host may be cloned.",
         )
+        min_free_bytes: int = Field(
+            2147483648,
+            description="Minimum free disk space (bytes) required on the repos volume before a clone starts (2 GiB default). 0 disables the check; a clone that could exhaust the disk is rejected with an Error before any network work.",
+        )
+        max_repo_bytes: int = Field(
+            2147483648,
+            description="Maximum .git size (bytes) allowed for a new clone, measured via a two-phase clone: the object store is fetched first and the working tree is checked out only if it is under this limit (2 GiB default; treat it as a .git budget - the checkout roughly doubles the footprint). 0 disables the check.",
+        )
         max_results: int = Field(
             50, description="Cap on item counts (files, matches, commits, branches, tags)."
         )
@@ -1217,8 +1225,37 @@ class Tools:
                 error=f"cannot create storage directory: {e}",
             )
             raise ToolError(f"cannot create storage directory for {repo}", cause=str(e))
+        # S6-A: pre-flight free-space check (ENOSPC prevention). A cheap
+        # disk_usage syscall on the (now existing) storage area, before any
+        # network work; min_free_bytes is operator policy, 0 = disabled.
+        min_free_bytes = getattr(self.valves, "min_free_bytes", 0) or 0
+        if min_free_bytes > 0:
+            usage = shutil.disk_usage(repos_path)
+            if usage.free < min_free_bytes:
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"free space {usage.free} < min_free_bytes {min_free_bytes}",
+                )
+                raise ToolError(
+                    "clone rejected: not enough free disk space for a new clone",
+                    cause=(
+                        f"free space on the repos volume is {usage.free} bytes, below the "
+                        f"min_free_bytes limit of {min_free_bytes}; free disk with "
+                        "cexp_remove_repo (preview with dry_run=True) or raise the Valve"
+                    ),
+                )
         try:
-            res = await run_allowed(git_args("clone", "--no-progress", remote, str(root)), TIMEOUT_CLONE)
+            # S6-B phase 1: fetch the object store WITHOUT a working tree so
+            # the .git size can be measured (and a giant repo rejected) before
+            # any checkout writes the worktree.
+            res = await run_allowed(
+                git_args("clone", "--no-progress", "--no-checkout", remote, str(root)),
+                TIMEOUT_CLONE,
+            )
         except ToolError as e:
             # Timeout (600 s): worse than fetch - left something half-done.
             self._cleanup_failed_clone(root)
@@ -1261,11 +1298,48 @@ class Tools:
             )
             raise ToolError(f"clone failed: {repo}", cause=trim_cause(res.stderr))
 
+        # S6-B: size gate on the fetched object store. Because the clone ran
+        # with --no-checkout, the worktree is still empty and _dir_size
+        # measures .git alone. max_repo_bytes is a ".git budget" (the
+        # checkout roughly doubles the on-disk footprint for text-heavy
+        # repos); when the limit is exceeded the fetch is discarded and the
+        # namespace stays free for a retry. 0 = disabled.
+        max_repo_bytes = getattr(self.valves, "max_repo_bytes", 0) or 0
+        if max_repo_bytes > 0:
+            measured = await self._dir_size(root)
+            if measured > max_repo_bytes:
+                await self._discard_new_clone(root)
+                audit_event(
+                    self.valves.audit_log,
+                    logging.WARNING,
+                    "clone",
+                    repo,
+                    "blocked",
+                    detail=f"measured .git size {measured} exceeds max_repo_bytes {max_repo_bytes}",
+                )
+                raise ToolError(
+                    "clone rejected: repository too large",
+                    cause=(
+                        f"measured .git size {measured} bytes exceeds the max_repo_bytes "
+                        f"limit of {max_repo_bytes}; raise the Valve for a genuinely large "
+                        "repository or clone a smaller one"
+                    ),
+                )
+
+        default_branch = await self._default_branch(str(root))
+        # S6-B phase 2: populate the working tree (--no-checkout leaves it
+        # empty). With ref the checkout is the requested branch/tag (release
+        # resolves from the fetched tags); without ref the clone's default
+        # branch is checked out, matching pre-S6 `git clone` behaviour.
         resolved_ref = None
         if ref:
             if ref == "release":
                 tag = await self._resolve_release_tag(str(root))
                 if tag is None:
+                    # A .git-only clone is useless to the read tools (they
+                    # read the working tree), so discard it and keep the
+                    # namespace free for a retry without ref.
+                    await self._discard_new_clone(root)
                     audit_event(
                         self.valves.audit_log,
                         logging.WARNING,
@@ -1278,56 +1352,64 @@ class Tools:
                         f"ref='release' requested but {repo} has no tags; "
                         "clone without ref or specify a branch/tag explicitly"
                     )
-                ref_arg = tag
+                checkout_ref = tag
                 resolved_ref = f"{tag} (release tag)"
             else:
-                ref_arg = ref
+                checkout_ref = ref
                 resolved_ref = ref
-            try:
-                res = await run_allowed(
-                    git_args("-C", str(root), "-c", "advice.detachedHead=false", "checkout", "--quiet", ref_arg),
-                    TIMEOUT_SEARCH,
-                )
-            except ToolError as e:
-                self._cleanup_failed_clone(root)
-                audit_event(
-                    self.valves.audit_log,
-                    logging.ERROR,
-                    "clone",
-                    repo,
-                    "timeout",
-                    detail=f"checkout of {ref_arg!r}",
-                    error=str(e),
-                )
-                raise
-            except asyncio.CancelledError:
-                # S4+S5: same cleanup for a cancelled post-clone checkout.
-                self._cleanup_failed_clone(root)
-                audit_event(
-                    self.valves.audit_log,
-                    logging.ERROR,
-                    "clone",
-                    repo,
-                    "cancelled",
-                    detail=f"checkout of {ref_arg!r} cancelled",
-                )
-                raise
-            if res.returncode != 0:
-                audit_event(
-                    self.valves.audit_log,
-                    logging.ERROR,
-                    "clone",
-                    repo,
-                    "failed",
-                    detail=f"checkout of {ref_arg!r} failed",
-                    error=trim_cause(res.stderr),
-                )
-                raise ToolError(
-                    f"clone succeeded but checkout of ref {ref_arg!r} failed",
-                    cause=trim_cause(res.stderr),
-                )
+        else:
+            checkout_ref = default_branch
+        try:
+            res = await run_allowed(
+                git_args("-C", str(root), "-c", "advice.detachedHead=false", "checkout", "--quiet", checkout_ref),
+                TIMEOUT_SEARCH,
+            )
+        except ToolError as e:
+            # Phase-2 timeout: discard the fetched .git so the namespace is
+            # not left blocked by a useless object store (S4+S5 discipline).
+            await self._discard_new_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "timeout",
+                detail=f"checkout of {checkout_ref!r}",
+                error=str(e),
+            )
+            raise
+        except asyncio.CancelledError:
+            # S4+S5: a cancelled post-clone checkout must not leave a
+            # worktree-less .git blocking <owner>/<name>.
+            await self._discard_new_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "cancelled",
+                detail=f"checkout of {checkout_ref!r} cancelled",
+            )
+            raise
+        if res.returncode != 0:
+            # The ref does not exist in the fetched repo: no worktree was
+            # ever written, so discard rather than leave a useless .git-only
+            # clone blocking the namespace.
+            await self._discard_new_clone(root)
+            audit_event(
+                self.valves.audit_log,
+                logging.ERROR,
+                "clone",
+                repo,
+                "failed",
+                detail=f"checkout of {checkout_ref!r} failed",
+                error=trim_cause(res.stderr),
+            )
+            raise ToolError(
+                f"clone succeeded but checkout of {checkout_ref!r} failed",
+                cause=trim_cause(res.stderr),
+            )
 
-        default_branch = await self._default_branch(str(root))
         status = await self._short_status(str(root))
         audit_event(
             self.valves.audit_log,
@@ -1386,6 +1468,17 @@ class Tools:
         an existing repository (that case is rejected before cloning)."""
         if root.exists() and not (root / ".git").exists():
             shutil.rmtree(root, ignore_errors=True)
+
+    async def _discard_new_clone(self, root: Path) -> None:
+        """Remove a clone directory created by THIS clone call that must not
+        be kept: an oversized .git (S6-B size gate) or a failed phase-2
+        checkout leaves only a useless worktree-less object store. The
+        namespace was verified free before cloning (collision checks), so
+        removal is confined to the allow-listed repos_path and cannot touch
+        a pre-existing repository. Unlike _cleanup_failed_clone, the .git
+        directory exists here and must be removed too."""
+        if root.exists():
+            await asyncio.to_thread(shutil.rmtree, root, ignore_errors=True)
 
     async def cexp_fetch_repo(self, repo: str) -> str:
         """Fetch new branches and tags from all remotes.

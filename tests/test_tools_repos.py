@@ -76,6 +76,12 @@ def repos_path(tmp_path):
 def make_tools(repos_path: Path) -> Tools:
     tools = Tools()
     tools.valves.repos_path = str(repos_path)
+    # S6: the storage guardrail valves default to a 2 GiB free-space floor /
+    # .git budget, which would make every clone test depend on the real disk
+    # state. Disable them here (hermetic suite); TestStorageGuardrails enables
+    # them explicitly.
+    tools.valves.min_free_bytes = 0
+    tools.valves.max_repo_bytes = 0
     return tools
 
 
@@ -774,6 +780,153 @@ class TestAuditLog:
         with caplog.at_level(logging.INFO, logger="code_explorer"):
             await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
         assert caplog.records == []
+
+
+# ---------------------------------------------------------------------------
+# S6: storage guardrails (min_free_bytes pre-flight + max_repo_bytes size gate)
+# ---------------------------------------------------------------------------
+
+
+class TestStorageGuardrails:
+    """S6: Option A (min_free_bytes pre-flight disk check) and Option B
+    (max_repo_bytes two-phase clone size gate). Both valves are 0 = disabled;
+    make_tools disables them so the rest of the suite is hermetic, and these
+    tests enable them explicitly."""
+
+    def _usage(self, free: int):
+        return types.SimpleNamespace(total=10**12, used=10**12 - free, free=free)
+
+    # -- Option A: min_free_bytes -------------------------------------------
+
+    async def test_min_free_bytes_rejects_when_free_below_limit(
+        self, repos_path, source_repo, monkeypatch
+    ):
+        """Free space below the limit -> Error before any git subprocess runs."""
+        tools = make_tools(repos_path)
+        tools.valves.min_free_bytes = 1000
+        monkeypatch.setattr("shutil.disk_usage", lambda p: self._usage(999))
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert out.startswith("Error:")
+        assert "not enough free disk space" in out
+        assert "min_free_bytes" in out
+        assert not (repos_path / "o" / "r").exists()
+
+    async def test_min_free_bytes_allows_when_enough_free(
+        self, repos_path, source_repo, monkeypatch
+    ):
+        tools = make_tools(repos_path)
+        tools.valves.min_free_bytes = 1000
+        monkeypatch.setattr("shutil.disk_usage", lambda p: self._usage(10**9))
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+        assert (repos_path / "o" / "r" / "hello.txt").exists()
+
+    async def test_min_free_bytes_zero_disables_check(
+        self, repos_path, source_repo, monkeypatch
+    ):
+        tools = make_tools(repos_path)
+        tools.valves.min_free_bytes = 0
+        monkeypatch.setattr("shutil.disk_usage", lambda p: self._usage(0))
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+
+    async def test_min_free_bytes_rejection_emits_audit_warning(
+        self, repos_path, source_repo, caplog, monkeypatch
+    ):
+        tools = make_tools(repos_path)
+        tools.valves.audit_log = True
+        tools.valves.min_free_bytes = 1000
+        monkeypatch.setattr("shutil.disk_usage", lambda p: self._usage(999))
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert out.startswith("Error:")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            '"action": "clone"' in m
+            and '"outcome": "blocked"' in m
+            and "free space" in m
+            for m in msgs
+        )
+
+    # -- Option B: max_repo_bytes (two-phase clone) -------------------------
+
+    async def test_max_repo_bytes_rejects_oversized_and_frees_namespace(
+        self, repos_path, source_repo
+    ):
+        """An oversized .git is rejected, the fetched object store is
+        discarded (namespace free again), and a retry without the limit
+        succeeds."""
+        tools = make_tools(repos_path)
+        tools.valves.max_repo_bytes = 10  # any real .git exceeds this
+        url = src_url(source_repo)
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert out.startswith("Error:")
+        assert "repository too large" in out
+        assert "max_repo_bytes" in out
+        assert not (repos_path / "o" / "r").exists()
+        tools.valves.max_repo_bytes = 0
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert not out.startswith("Error:"), out
+        assert (repos_path / "o" / "r" / "hello.txt").exists()
+
+    async def test_max_repo_bytes_allows_under_limit(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        tools.valves.max_repo_bytes = 2**40
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+        assert (repos_path / "o" / "r" / "hello.txt").exists()
+
+    async def test_max_repo_bytes_zero_disables_check(self, repos_path, source_repo):
+        tools = make_tools(repos_path)
+        tools.valves.max_repo_bytes = 0
+        out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert not out.startswith("Error:"), out
+
+    async def test_max_repo_bytes_rejection_emits_audit_warning(
+        self, repos_path, source_repo, caplog
+    ):
+        tools = make_tools(repos_path)
+        tools.valves.audit_log = True
+        tools.valves.max_repo_bytes = 10
+        with caplog.at_level(logging.INFO, logger="code_explorer"):
+            out = await tools.cexp_clone_repo("o/r", url=src_url(source_repo))
+        assert out.startswith("Error:")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            '"action": "clone"' in m
+            and '"outcome": "blocked"' in m
+            and "max_repo_bytes" in m
+            for m in msgs
+        )
+
+    # -- S6-B phase-2 no-junk guarantees ------------------------------------
+
+    async def test_failed_ref_checkout_leaves_no_clone_behind(
+        self, repos_path, source_repo
+    ):
+        """A ref that does not exist in the fetched repo must not leave a
+        useless worktree-less .git blocking the namespace."""
+        tools = make_tools(repos_path)
+        url = src_url(source_repo)
+        out = await tools.cexp_clone_repo("o/r", url=url, ref="nonexistent-ref")
+        assert out.startswith("Error:")
+        assert not (repos_path / "o" / "r").exists()
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert not out.startswith("Error:"), out
+
+    async def test_release_ref_with_no_tags_leaves_no_clone_behind(
+        self, repos_path, source_repo_no_tags
+    ):
+        """ref='release' on a tag-less repo: the fetched object store is
+        discarded so a retry without ref succeeds cleanly."""
+        tools = make_tools(repos_path)
+        url = src_url(source_repo_no_tags)
+        out = await tools.cexp_clone_repo("o/r", url=url, ref="release")
+        assert out.startswith("Error:")
+        assert "no tags" in out
+        assert not (repos_path / "o" / "r").exists()
+        out = await tools.cexp_clone_repo("o/r", url=url)
+        assert not out.startswith("Error:"), out
 
 
 class TestReleaseSortKey:
