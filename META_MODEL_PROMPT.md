@@ -78,7 +78,9 @@ allow-listed storage area.
     `origin` and on-disk `size`; remove clones you no longer need with
     `cexp_remove_repo(repo, dry_run=True)` (preview path + size) before
     actually deleting. `cexp_list_branches(..., merged=True/False)` answers
-    "is dev already in main?".
+    "is dev already in main?". A clone rejection that names a storage limit
+    (`min_free_bytes` free space, `max_repo_bytes` .git size) is not a code
+    error: free disk with `cexp_remove_repo` or raise the Valve, then retry.
 
 ## Presentation
 

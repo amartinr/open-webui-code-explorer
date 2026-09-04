@@ -93,6 +93,23 @@ A volume is required so clones survive container recreation; the process needs
 read/write permission on it. The Valve is a logical override; actual write
 permission comes from the mounted volume.
 
+### Storage guardrails (S6)
+
+Storage is finite, so two admin Valves on the cloner scripts default to 2 GiB
+(each `0 = disabled`):
+
+- `min_free_bytes` — clones are rejected (Error + `cause:`) before any network
+  work when free space on the repos volume drops below this floor.
+- `max_repo_bytes` — clones are fetched first and the working tree is checked
+  out only when the measured `.git` size is under this limit (a ".git budget":
+  the checkout roughly doubles the footprint). Oversized fetches are discarded,
+  leaving the namespace free to retry.
+
+A storage rejection tells the model what to do: free disk with
+`cexp_remove_repo(repo, dry_run=True)` / `cexp_list_repos`, raise the Valve, or
+clone a smaller repository. The same guards make `cexp_remove_repo`'s `dry_run`
+preview the natural first step when the model is asked to free space.
+
 ## Security
 
 - Subprocesses: `git` only, argument arrays, headless env (no prompts, no

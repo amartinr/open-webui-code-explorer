@@ -6,18 +6,30 @@
 > contract), §9.4 (timeouts), §9.7 (headless env), §12.1 (read-at-ref without
 > network); the executed S1–S5 history for the established build/test/commit
 > discipline.
-> **State of the repo (current):** 15 tools, ~400 tests, version `1.2.4`
+> **State of the repo (current):** 15 tools, ~400 tests, version `1.2.5`
 > (four version locations: three `templates/*.py.tpl` + `ALL_FRONTMATTER` in
 > `build.py`). The audit trail (S5) IS implemented: `audit_event` in
 > `common.py`, WARNING/ERROR/INFO events in the repos template, opt-in via the
 > `audit_log` Valve. The Valves contract test requires the shared core on all
-> four scripts plus `allowed_hosts` on the two cloners.
-> **Status:** PROPOSAL — decision pending (§4). This plan documents two
-> storage-lifecycle gaps and lays out the options; no code is changed until
-> the decision is made.
+> four scripts plus the cloner-only extras on the two cloners.
+> **Status:** DECIDED and EXECUTED on this branch (§4, §8) — Options A and B
+> are implemented (`hardening:` commits), C and the rejected options are
+> recorded as not taken.
 > **This plan REPLACES the previous PLAN.md** (S5 audit trail, delivered).
-> The S5 delivery is recorded in `DESIGN.md` §9.8 and in the commit history;
-> if the new work is declined, the old plan can be restored from git.
+> The S5 delivery is recorded in `DESIGN.md` §9.8 and in the commit history.
+
+---
+
+## 0. Execution log (updated after each step)
+
+| Step | Description | Status |
+|---|---|---|
+| 1 | Valves `min_free_bytes` + `max_repo_bytes` (2 GiB defaults, 0 = disabled) on the two cloners (repos template + combined script); Valves contract test updated | ✅ |
+| 2 | A: pre-flight `shutil.disk_usage` free-space check before clone (Error + cause + audit WARNING) | ✅ |
+| 3 | B: two-phase clone (`--no-checkout` -> `_dir_size` gate -> checkout); oversized fetch discarded via `_discard_new_clone`; default-branch checkout added for the no-ref case | ✅ |
+| 4 | Tests: hermetic fixtures (guardrails off in `make_tools`/runtime test) + `TestStorageGuardrails` (A/B enable, disable, audit, no-junk) | ✅ |
+| 5 | Docs: DESIGN §5.5 table + new §5.7 + audit table rows; README storage-guardrails paragraph; META_MODEL_PROMPT §12 line | ✅ |
+| 6 | Version bump `1.2.5` (4 places), regenerate `dist/`, full suite green | ✅ |
 
 ---
 
@@ -173,60 +185,74 @@ Valve `max_total_bytes`.
   sees a consistent "storage is a resource" contract — matching the existing
   META_MODEL_PROMPT.md §12 (manage clones deliberately).
 
-## 4. Decision (PENDING)
+## 4. Decision (RECORDED — A and B implemented)
 
-| Option | Cost | Value | Implement? |
+| Option | Cost | Value | Decision |
 |---|---|---|---|
-| A: `min_free_bytes` pre-flight | Low | High (ENOSPC prevention) | **Proposed: yes** |
-| B: `max_repo_bytes` two-phase | Medium | High (giant-repo bound) | **Proposed: yes** |
-| C: `max_total_bytes` quota | Medium–High | Medium (until growth bites) | **Proposed: defer** |
+| A: `min_free_bytes` pre-flight | Low | High (ENOSPC prevention) | **Taken** — default 2 GiB, 0 = disabled |
+| B: `max_repo_bytes` two-phase | Medium | High (giant-repo bound) | **Taken** — default 2 GiB, 0 = disabled |
+| C: `max_total_bytes` quota | Medium–High | Medium (until growth bites) | **Deferred** — revisit if real-world usage shows unbounded aggregate growth |
 | Partial/shallow clone mode | High (invariant change) | Medium | Rejected (W5) |
 | GitHub API size estimate | Low code, breaks invariant | Low–Medium | Rejected (W4) |
 
-**Decision:** record the outcome here when the maintainer decides. Options A
-and B are the recommended scope for the next hardening batch; C is a
-candidate follow-up. If the maintainer declines, this plan is closed with
-the weaknesses documented and no code changes.
+**Decision (maintainer, recorded on this branch):** A and B are implemented
+here — one `hardening:` commit for the code/valves/tests, one `docs:` commit
+for DESIGN/README/META_MODEL_PROMPT/PLAN. C stays deferred; the weaknesses
+(W1/W2) it would address are documented in §2 for a future plan.
 
-## 5. Scope (if approved — NOT implemented in this branch)
+## 5. Scope (EXECUTED on this branch)
 
-This branch contains **only this plan**. If A/B are approved, a follow-up
-implementation branch must touch only `common.py` (if a helper is added),
-`templates/*.py.tpl`, `build.py` (frontmatter + version), and tests; `dist/`
-is regenerated via `build.py` and never hand-edited. Per the established
-discipline: one `hardening:` commit per step, each ending with `python
-build.py` + `python -m pytest` green, version bump, push.
+This branch contains the plan AND its execution (decision: §4). A and B touch
+only `templates/repos.py.tpl` (clone flow + Valves), `build.py` (frontmatter
+version + the combined script's Valves), the version strings in the other two
+templates, `tests/`, and docs. `dist/` is regenerated via `build.py` and never
+hand-edited. Per the established discipline: one `hardening:` commit per step,
+each ending with `python build.py` + `python -m pytest` green, version bump.
 
-## 6. Tests (if approved)
+Implementation notes (deviations or refinements beyond the proposal):
+
+- **Phase-2 checkout is now explicit even without `ref`**: `--no-checkout`
+  leaves the worktree empty, so the default branch is checked out when no
+  `ref` is given (identical end state to pre-S6 `git clone`).
+- **Failed phase-2 checkouts and `ref='release'` on tag-less repos discard the
+  fetched object store** (`_discard_new_clone`, new helper next to
+  `_cleanup_failed_clone`): a worktree-less `.git` is useless to the read
+  tools (they read the working tree), so leaving it would only block the
+  `<owner>/<name>` namespace. Pre-S6, a failed ref checkout left the full
+  default clone behind; the error text is unchanged.
+- **Defaults**: both Valves default to 2 GiB (`2147483648`) with `0` =
+  disabled, matching the plan's §3 example for A and keeping B's rejection
+  rare. `max_repo_bytes` is documented as a `.git` budget.
+
+## 6. Tests (implemented)
 
 - A: monkeypatch `shutil.disk_usage` to report `free` below the limit →
   clone rejected with the right `Error:` shape, no git subprocess spawned;
-  above the limit → clone proceeds; Valve 0 = disabled.
-- B: synthetic repo sized via the `git_daemon` fixture; `max_repo_bytes`
-  below/above the measured `.git` size → rejected/cleaned vs accepted;
-  timeout and `CancelledError` cleanup still cover both phases.
-- C (if taken): quota accounting across multiple clones; rejection message
-  names current total and suggests `cexp_remove_repo`.
+  above the limit → clone proceeds; Valve 0 = disabled; audit WARNING.
+- B: synthetic repo via the `git_daemon` fixture; `max_repo_bytes`
+  below/above the measured `.git` size → rejected + namespace freed (retry
+  succeeds) vs accepted; Valve 0 = disabled; audit WARNING.
+- No-junk: a failed phase-2 checkout and `ref='release'` on a tag-less repo
+  leave no `.git` behind and a retry without `ref` succeeds.
 - Valves contract: new Valves on the two cloners, absent from the read-only
-  scripts (mirror of `allowed_hosts`), updated in `tests/test_valves.py`.
+  scripts (mirror of `allowed_hosts`), updated in `tests/test_valves.py`;
+  hermetic fixtures disable the guardrails where the suite must not depend
+  on the machine's real disk state.
 
-## 7. Documentation (if approved)
+## 7. Documentation (implemented)
 
-- `DESIGN.md`: extend §5.5 (Valves contract) and the security section with
-  the storage guards; document the `.git`-budget semantics of B.
-- `README.md`: storage-management paragraph (guardrails + how the model
-  reacts to storage rejections).
-- `META_MODEL_PROMPT.md`: one line in §12 ("a storage rejection names the
-  limit and the freeing action; honor it").
+- `DESIGN.md`: §5.5 Valves table rows, new §5.7 (storage guardrails + `.git`-budget semantics of B + rejection shape), Phase-1 `cexp_clone_repo` spec (two-phase clone), §9.8 audit event table rows.
+- `README.md`: storage-guardrails paragraph under "Configure repository storage".
+- `META_MODEL_PROMPT.md`: one line in §12.
 
 ## 8. Delivery checklist
 
-- [ ] Decision recorded in §4.
-- [ ] (If A/B) `common.py` + `templates/*.py.tpl` + `build.py` edited; `dist/` regenerated.
-- [ ] (If A/B) `python -m pytest` all green.
-- [ ] (If A/B) New Valves on both cloners; Valves contract test updated.
-- [ ] (If A/B) Docs updated (§7); version bumped.
-- [ ] This branch: PLAN.md only, committed and pushed.
+- [x] Decision recorded in §4 (A+B taken, C deferred).
+- [x] `templates/repos.py.tpl` + `build.py` edited; `dist/` regenerated via `build.py`.
+- [x] `python -m pytest` all green (415 passed).
+- [x] New Valves on both cloners; Valves contract test updated.
+- [x] Docs updated (§7); version bumped to `1.2.5` (4 places).
+- [x] Commits: `hardening:` (code/valves/tests/version) + `docs:` (DESIGN/README/META_MODEL/PLAN) on this branch.
 
 ## 9. Explicitly out of scope
 

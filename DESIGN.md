@@ -172,7 +172,9 @@ Admin-facing Valves (not exposed to the agent):
 | `max_results` | int | `50` | Cap on item counts (files, matches, commits). |
 | `max_lines` | int | `200` | Cap on output lines (file reads, diffs). |
 | `max_bytes` | int | `20480` | Hard byte cap (20 KB); whichever of `max_lines`/`max_bytes` is hit first truncates. |
-| `allowed_hosts` | str | `""` | **Repos-only extra**: comma-separated host allow-list for `cexp_clone_repo` (empty = unrestricted); exact host or subdomain on a dot boundary (S3). |
+| `allowed_hosts` | str | `""` | **Cloner-only extra (S3)**: comma-separated host allow-list for `cexp_clone_repo` (empty = unrestricted); exact host or subdomain on a dot boundary. |
+| `min_free_bytes` | int | `2147483648` | **Cloner-only extra (S6-A)**: minimum free disk space (bytes) on the repos volume before a clone starts (2 GiB default); `0` disables. A clone that could exhaust the disk is rejected up front (Error + audit WARNING), before any network work. |
+| `max_repo_bytes` | int | `2147483648` | **Cloner-only extra (S6-B)**: maximum `.git` size (bytes) for a new clone (2 GiB default); `0` disables. Enforced via a **two-phase clone** (§5.7): the object store is fetched first and the working tree is checked out only when the measured size is under the limit; otherwise the fetch is discarded. |
 
 All three scripts need `repos_path` (even read/search/commit tools must locate
 the repositories). The **`OWUI_REPOS_PATH` env var is the recommended global
@@ -281,6 +283,42 @@ No tool ever returns raw `stdout`/`stderr` directly to the model.
 
 ---
 
+### 5.7 Storage guardrails (S6)
+
+Storage on the repos volume is finite; nothing should let it grow without
+bound or let a single oversized clone exhaust the disk. Two operator Valves
+default to 2 GiB and are both `0 = disabled`:
+
+- **A — `min_free_bytes` (pre-flight check).** Before `git clone` runs,
+  `shutil.disk_usage(repos_path).free` is compared to the Valve; below it the
+  clone is rejected with `Error:` + `cause:` (naming the free space, the limit,
+  and the freeing/raising actions) and an audit WARNING. One syscall, before
+  any network work; covers the "disk almost full" case regardless of repo size.
+- **B — `max_repo_bytes` (two-phase clone, ".git budget").** The clone runs
+  as `git clone --no-checkout`, so only the object store is fetched; the
+  existing `_dir_size` walk then measures `.git` alone. Under the limit the
+  working tree is checked out (requested `ref`, or the default branch when no
+  `ref` is given — matching pre-S6 `git clone` behaviour); over the limit the
+  fetch is discarded (`_discard_new_clone`) and the clone is rejected, leaving
+  the `<owner>/<name>` namespace free for a retry. The limit is documented as a
+  **`.git` budget**: the checkout roughly doubles the on-disk footprint for
+  text-heavy repos.
+
+The rejection shape is shared (and matches the audit/`allowed_hosts`
+rejections): `Error:` + `cause:` naming the measured/free bytes, the limit, and
+what the model should do (free space with `cexp_remove_repo`, raise the Valve,
+or clone a smaller repo), plus an audit WARNING (`blocked`). The guards never
+run when disabled, cost one `disk_usage` syscall (A) or one directory walk (B)
+per clone, and do not change the API surface: `cexp_clone_repo`'s parameters,
+return shape, and the no-shallow-clone invariant (§7 Phase 1) are unchanged.
+Discarded fetches and failed phase-2 checkouts are removed by
+`_discard_new_clone`, which — like `_cleanup_failed_clone` — only removes a
+directory this very clone call created inside `<repos_path>` (the namespace was
+verified free before cloning), so a pre-existing repository can never be
+touched.
+
+---
+
 ## 6. Tool Contract Conventions
 
 All tools share these conventions. Implement them consistently.
@@ -376,7 +414,12 @@ cexp_clone_repo(
 - Resolve target `<repos_path>/<owner>/<name>`.
 - If it already exists, return an error/notice telling the model to use
   `cexp_fetch_repo`, `cexp_pull_repo`, or `cexp_list_repos` (no destructive overwrite).
-- Run `git clone` (full clone; no shallow option).
+- Run `git clone` (full clone; no shallow option). Since S6 the clone is
+  **two-phase**: `git clone --no-checkout` fetches the object store, the size
+  is measured against the `max_repo_bytes` Valve (§5.7), and only then is the
+  working tree checked out (the requested `ref`, or the default branch when no
+  `ref` is given). A pre-flight `min_free_bytes` disk check (§5.7) runs before
+  any network work.
 - After clone, if `ref` is given, checkout that ref.
 - `ref="release"` is a special value resolving to the most recent **release tag**:
   prefer the highest tag matching a semver pattern (`v?X.Y.Z`) ordered by version;
@@ -1074,6 +1117,8 @@ Event levels and emission points:
 | WARNING | fetch/pull rejected: origin not allow-listed (tampered `.git/config` indicator) | `_validate_origin` |
 | WARNING | clone rejected: URL scheme not allowed (`file://`, `ext::`, credentials) | `_clone_repo` |
 | WARNING | clone rejected: host outside `allowed_hosts` | `_clone_repo` |
+| WARNING | clone rejected: free space below `min_free_bytes` (S6-A pre-flight) | `_clone_repo` |
+| WARNING | clone rejected: measured `.git` size above `max_repo_bytes` (S6-B, fetch discarded) | `_clone_repo` |
 | WARNING | invalid ref rejected (revision expressions, options, `..`) | `_clone_repo` |
 | WARNING | namespace collision: "repo already exists" (same or different origin) | `_clone_repo` |
 | WARNING | `ref="release"` requested on a repo with no tags | `_clone_repo` |
